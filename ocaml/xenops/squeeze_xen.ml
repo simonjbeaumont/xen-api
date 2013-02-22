@@ -74,7 +74,7 @@ module Domain = struct
 	  then Some (Hashtbl.find cache domid)
 	  else
 		  try
-			  let open Xenctrl.Domain_info in
+			  let open Xenctrl in
 			  let di = Xenctrl.domain_getinfo xc domid in
 			  let maxmem = Xenctrl.pages_to_kib (Int64.of_nativeint di.max_memory_pages) in
 			  let d = { path = xs.Xs.getdomainpath domid;
@@ -303,7 +303,7 @@ let update_cooperative_flags cnx =
 let make_host ~verbose ~xc ~xs =
 	(* Wait for any scrubbing so that we don't end up with no immediately usable pages --
 	   this might cause something else to fail (eg domain builder?) *)
-	while Int64.div ((Xenctrl.physinfo xc).Xenctrl.Phys_info.scrub_pages |> Int64.of_nativeint) 1024L <> 0L do
+	while Int64.div ((Xenctrl.physinfo xc).Xenctrl.scrub_pages |> Int64.of_nativeint) 1024L <> 0L do
 		ignore(Unix.select [] [] [] 0.25)
 	done;
 
@@ -323,7 +323,7 @@ let make_host ~verbose ~xc ~xs =
 	   the call to domain_getinfolist is not atomic but comprised of many hypercall invocations. *)
 
 	(* We are excluding dom0, so it will never be ballooned down. *)
-	let open Xenctrl.Domain_info in
+	let open Xenctrl in
 	let domain_infolist = List.filter (fun di -> di.domid > 0) (Xenctrl.domain_getinfolist xc 0) in
 	(*
 		For the host free memory we sum the free pages and the pages needing
@@ -331,9 +331,9 @@ let make_host ~verbose ~xc ~xs =
 		is slow.
 	*)
 	let physinfo = Xenctrl.physinfo xc in
-	let free_pages_kib = Xenctrl.pages_to_kib (Int64.of_nativeint physinfo.Xenctrl.Phys_info.free_pages)
-	and scrub_pages_kib = Xenctrl.pages_to_kib (Int64.of_nativeint physinfo.Xenctrl.Phys_info.scrub_pages)
-	and total_pages_kib = Xenctrl.pages_to_kib (Int64.of_nativeint physinfo.Xenctrl.Phys_info.total_pages) in
+	let free_pages_kib = Xenctrl.pages_to_kib (Int64.of_nativeint physinfo.Xenctrl.free_pages)
+	and scrub_pages_kib = Xenctrl.pages_to_kib (Int64.of_nativeint physinfo.Xenctrl.scrub_pages)
+	and total_pages_kib = Xenctrl.pages_to_kib (Int64.of_nativeint physinfo.Xenctrl.total_pages) in
 	let free_mem_kib = free_pages_kib +* scrub_pages_kib in
 
 	let cnx = xc, xs in
