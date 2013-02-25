@@ -185,7 +185,7 @@ module Domain = struct
 	match x with
 	| Some y -> y
 	| None ->
-		  raise Xs_protocol.Enoent key
+		  raise (Xs_protocol.Enoent key)
 
   (** Write a new (key, value) pair into a domain's directory in xenstore. Don't write anything
 	  if the domain's directory doesn't exist. Don't throw exceptions. *)
