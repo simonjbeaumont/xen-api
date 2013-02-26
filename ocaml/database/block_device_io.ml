@@ -120,7 +120,7 @@ exception NotEnoughSpace
 
 (* Make informational output go to the syslog *)
 let initialise_logging () =
-	Debug.set_facility Syslog.Local5;
+	Debug.set_facility Syslog_transitional.Local5;
 	Debug.disable ~level:Syslog.Debug name
 
 (* --------------------------------------------- *)
@@ -502,6 +502,8 @@ let action_writedelta block_dev_fd client datasock target_response_time =
   let failure_mesg = "writedelta|nack" in
   let success_mesg = "writedelta|ack_" in
 
+  R.debug "Received writedelta command";
+
   (* Read marker, generation count, length and delta from client *)
   read_separator client;
   let marker = read_marker client in
@@ -518,6 +520,7 @@ let action_writedelta block_dev_fd client datasock target_response_time =
   try
     (* Read the validity byte *)
     let validity = read_validity_byte block_dev_fd target_response_time in
+    R.debug "Read validity byte: %s" validity;
 
     (* Decide which half of the double-buffered file to use *)
     let half_to_use = match validity with
@@ -542,7 +545,9 @@ let action_writedelta block_dev_fd client datasock target_response_time =
     if str_len > available_space then raise NotEnoughSpace;
 
     (* Write the delta *)
+    R.debug "Writing delta...";
     Unixext.time_limited_write block_dev_fd str_len str target_response_time;
+    R.debug "Written delta";
 
     (* Set the internal pointer for this half to the position after this point *)
     set_pointer half_to_use (str_len + pos);
