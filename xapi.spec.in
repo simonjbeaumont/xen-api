@@ -122,7 +122,7 @@ This package contains a library of functions for watching xenstore.
 %patch0 -p0 -b xapi-version.patch
 
 %build
-export OPAMROOT=$RPM_BUILD_ROOT/.opam
+export OPAMROOT=/tmp/.opam
 rm -rf $OPAMROOT
 opam init /usr/local/opam-repository
 eval `opam config -env`
