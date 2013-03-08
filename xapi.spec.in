@@ -123,6 +123,13 @@ Group:   Development/Libraries
 %description xenstore-watch-devel
 This package contains a library of functions for watching xenstore.
 
+%package fe
+Summary: The fork and exec daemon
+Group: System/Hypervisor
+
+%description fe
+This package contains the fork and exec daemon.
+
 %prep 
 %setup -q
 %setup -a 3 -T -D -c opam-repo-dev
@@ -165,6 +172,11 @@ done
 
 cd $RPM_BUILD_ROOT/usr/local/opam/system/lib/stublibs
 rm dllbitstring.so* dlljs_of_ocaml.so* dlllwt-unix_stubs.so* dllssl_stubs.so* dllssl_threads_stubs.so*
+
+mkdir -p $RPM_BUILD_ROOT/etc/rc.d/init.d
+cp /usr/local/opam/system/etc/init.d/fe $RPM_BUILD_ROOT/etc/rc.d/init.d/fe
+mkdir -p $RPM_BUILD_ROOT/opt/xensource/libexec
+cp /usr/local/opam/system/bin/xcp-fe $RPM_BUILD_ROOT/opt/xensource/libexec/fe
 
 %clean
 rm -rf $RPM_BUILD_ROOT
@@ -478,12 +490,9 @@ rm -rf $RPM_BUILD_ROOT
 %defattr(-,root,root,-)
 /usr/lib/ocaml/xenstore-watch/*
 
+%files fe
+/etc/rc.d/init.d/fe
+/opt/xensource/libexec/fe
+
 %changelog
-
-
-
-
-
-
-
 
