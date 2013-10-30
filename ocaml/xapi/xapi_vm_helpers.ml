@@ -790,6 +790,8 @@ let wait_memory_target_live ~__context ~self
 			(* field within the VM's metrics record, presenting *)
 			(* a consistent view to the world.                  *)
 			let vm_metrics_ref = Db.VM.get_metrics ~__context ~self in
+			debug "sjbx: setting memory_actual for vm %s (at domid %d) to %Ld"
+				(Ref.string_of self) domain_id memory_actual_bytes;
 			Db.VM_metrics.set_memory_actual ~__context ~self:vm_metrics_ref ~value:memory_actual_bytes
 		else begin
 			(* At exponentially increasing intervals, write  *)

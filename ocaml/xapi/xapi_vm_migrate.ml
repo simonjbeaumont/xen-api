@@ -323,6 +323,13 @@ let transmitter ~xal ~__context is_localhost_migration fd vm_migrate_failed host
 	    debug "MTC: Sender won't clean up by destroying remains of local domain";
          ) else (
 	 let preserve_xs_vm = (Helpers.get_localhost ~__context = host) in
+	 debug "sjbx: injecting fault";
+	 Unixext.touch_file "/tmp/fist_sctx_1455";
+	 debug "sjbx: delaying for 15 seconds...";
+	 Thread.delay 15.0;
+	 debug "sjbx: delay finished.";
+	 Xapi_fist.delete "sctx_1455";
+
 	 Vmops.destroy_domain ~preserve_xs_vm ~clear_currently_attached:false
 	   ~__context ~xc ~xs ~self:vm domid)
 	)

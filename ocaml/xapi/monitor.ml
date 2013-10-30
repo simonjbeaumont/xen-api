@@ -136,6 +136,11 @@ let update_memory __context xc doms =
 		let kib = Xc.pages_to_kib (Int64.of_nativeint dom.Xc.total_memory_pages) in 
 		let memory = Int64.mul kib 1024L in
 		let uuid = Uuid.string_of_uuid (Uuid.uuid_of_int_array dom.Xc.handle) in
+		let memory =
+			if (Xapi_fist.sctx_1455 ()) then
+				Int64.mul (Int64.mul 1024L 1024L) 666L
+			else memory
+		in
 		let main_mem_ds = 
 		  (VM uuid,
 		  ds_make ~name:"memory" ~description:"Memory currently allocated to VM"

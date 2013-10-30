@@ -29,6 +29,7 @@ let fistpoint_read name =
 
 let delete name = Unixext.unlink_safe ("/tmp/fist_" ^ name)
 
+let sctx_1455 () = fistpoint "sctx_1455"
 (** Insert 2 * Xapi_globs.max_clock_skew into the heartbeat messages *)
 let insert_clock_skew             () = fistpoint "insert_clock_skew"
 

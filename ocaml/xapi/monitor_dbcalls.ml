@@ -248,6 +248,8 @@ let pifs_and_memory_update_fn () =
       List.iter (fun (uuid,memory) ->
 	let vm = Db.VM.get_by_uuid ~__context ~uuid in
 	let vmm = Db.VM.get_metrics ~__context ~self:vm in
+	if (not (Db.VM.get_is_control_domain ~__context ~self:vm)) then
+	    debug "sjbx: monitor_dbcalls: setting memory_actual for vm %s to %Ld" (Ref.string_of vmm) memory;
 	Db.VM_metrics.set_memory_actual ~__context ~self:vmm ~value:memory) memories;
       Monitor_master.update_pifs ~__context host pifs;
       match host_memories with None -> () | Some (free,total) ->
