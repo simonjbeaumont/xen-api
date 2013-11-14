@@ -94,6 +94,15 @@ let get_vm_memory_changes xc =
 				let uuid = Uuid.string_of_uuid (Uuid.uuid_of_int_array dom.handle) in
 				let kib = Xenctrl.pages_to_kib (Int64.of_nativeint dom.total_memory_pages) in
 				let memory = Int64.mul kib 1024L in
+				(* begin ca-122880 debug *)
+				let memory =
+					if (Xapi_fist.fistpoint "ca-112880")
+					then begin
+						debug "ca-112880: Spoofing memory...";
+						Int64.mul 123L (Int64.mul 1024L 1024L)
+					end else memory
+				in
+				(* end ca-122880 debug *)
 				Hashtbl.add vm_memory_tmp uuid memory
 			end
 	in

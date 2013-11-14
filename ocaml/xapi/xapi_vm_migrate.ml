@@ -109,6 +109,8 @@ let pool_migrate ~__context ~vm ~host ~options =
 			Xapi_xenops.with_events_suppressed ~__context ~self:vm (fun () ->
 				(* XXX: PR-1255: the live flag *)
 				info "xenops: VM.migrate %s to %s" vm' xenops_url;
+				debug "ca-112880: Creating fist-point...";
+				Unixext.touch_file "/tmp/fist_ca-112880";
 				migrate_with_retry dbg vm' [] [] xenops_url;
 				(* Delete all record of this VM locally (including caches) *)
 				Xapi_xenops.Xenopsd_metadata.delete ~__context vm';
@@ -135,7 +137,9 @@ let pool_migrate ~__context ~vm ~host ~options =
 	Helpers.call_api_functions ~__context
 		(fun rpc session_id ->
 			XenAPI.VM.pool_migrate_complete rpc session_id vm host
-		)
+		);
+	debug "ca-112880: Deleting fist-point...";
+	Xapi_fist.delete "ca-112880"
 
 let pool_migrate_complete ~__context ~vm ~host =
 	let id = Db.VM.get_uuid ~__context ~self:vm in
