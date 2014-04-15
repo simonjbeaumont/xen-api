@@ -24,6 +24,8 @@ module GetRemainingCapacity = Generic.Make(Generic.EncapsulateState(struct
 		type input_t = (pgpu_state * vgpu_type)
 		type output_t = int64
 
+		let compare = (=)
+
 		let string_of_input_t (pgpu, vgpu_type) =
 			Printf.sprintf
 				"(pgpu: %s, test vgpu_type: %s)"

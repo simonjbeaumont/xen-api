@@ -38,6 +38,8 @@ module CompareDates = Generic.Make(struct
 		type input_t = (Date.iso8601 option * Date.iso8601 option)
 		type output_t = int
 
+		let compare = (=)
+
 		let string_of_input_t input =
 			Printf.sprintf "(%s, %s)"
 				(string_of_date_opt (fst input))
@@ -63,6 +65,8 @@ module PoolExpiryDate = Generic.Make(Generic.EncapsulateState(struct
 	module Io = struct
 		type input_t = Date.iso8601 option list
 		type output_t = Date.iso8601 option
+
+		let compare = (=)
 
 		let string_of_input_t input =
 			Printf.sprintf "[%s]"
@@ -102,6 +106,8 @@ module PoolEdition = Generic.Make(Generic.EncapsulateState(struct
 		type input_t = string list
 		type output_t = string
 
+		let compare = (=)
+
 		let string_of_input_t input =
 			Printf.sprintf "[%s]" (String.concat "; " input)
 		let string_of_output_t = (fun x -> x)
@@ -133,6 +139,8 @@ module PoolLicenseState = Generic.Make(Generic.EncapsulateState(struct
 	module Io = struct
 		type input_t = host_license_state list
 		type output_t = (string * string) list
+
+		let compare = (=)
 
 		let string_of_input_t input =
 			Printf.sprintf "[%s]"

@@ -161,6 +161,8 @@ module ParseSMAPIv1Features = Generic.Make(struct
 		type input_t = string list
 		type output_t = Smint.feature list
 
+		let compare = (=)
+
 		let string_of_input_t = string_of_string_list
 		let string_of_output_t = string_of_feature_list
 	end
@@ -177,6 +179,8 @@ module CreateSMAPIv2Features = Generic.Make(struct
 	module Io = struct
 		type input_t = Smint.feature list
 		type output_t = string list
+
+		let compare = (=)
 
 		let string_of_input_t = string_of_feature_list
 		let string_of_output_t = string_of_string_list
@@ -196,6 +200,8 @@ module CreateSMObject = Generic.Make(Generic.EncapsulateState(struct
 	module Io = struct
 		type input_t = string list
 		type output_t = sm_object
+
+		let compare = (=)
 
 		let string_of_input_t = string_of_string_list
 		let string_of_output_t = string_of_sm_object

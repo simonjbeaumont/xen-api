@@ -50,6 +50,8 @@ module HVMSerial = Generic.Make(Generic.EncapsulateState(struct
 		type input_t = vm_config
 		type output_t = string option
 
+		let compare = (=)
+
 		let string_of_input_t = string_of_vm_config
 		let string_of_output_t = function
 			| Some s -> Printf.sprintf "Some %s" s
@@ -122,6 +124,8 @@ module VideoMode = Generic.Make(Generic.EncapsulateState(struct
 		type input_t = vm_config
 		type output_t = Vm.video_card
 
+		let compare = (=)
+
 		let string_of_input_t = string_of_vm_config
 		let string_of_output_t = function
 			| Vm.Cirrus -> "Cirrus"
@@ -167,6 +171,8 @@ module VideoRam = Generic.Make(Generic.EncapsulateState(struct
 	module Io = struct
 		type input_t = vm_config
 		type output_t = int
+
+		let compare = (=)
 
 		let string_of_input_t = string_of_vm_config
 		let string_of_output_t = string_of_int

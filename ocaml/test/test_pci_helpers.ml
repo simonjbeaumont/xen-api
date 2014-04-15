@@ -52,6 +52,15 @@ module ParseLspciLine = Generic.Make(struct
 		type input_t = string
 		type output_t = Xapi_pci_helpers.pci
 
+		let compare pci pci' =
+			let open Xapi_pci_helpers in
+			let lowercase pci = { pci with
+				vendor_name = String.lowercase pci.vendor_name;
+				device_name = String.lowercase pci.device_name;
+				class_name = String.lowercase pci.class_name; }
+			in
+			lowercase pci = lowercase pci'
+
 		let string_of_input_t str = str
 		let string_of_output_t pci = Xapi_pci_helpers.(
 			Printf.sprintf

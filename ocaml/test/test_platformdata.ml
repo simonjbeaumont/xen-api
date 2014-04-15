@@ -21,6 +21,8 @@ module SanityCheck = Generic.Make(struct
 		type input_t = ((string * string) list * bool)
 		type output_t = (string * string) list
 
+		let compare = (=)
+
 		let string_of_input_t input =
 			Printf.sprintf "(platformdata = %s, filter_out_unknowns = %b)"
 				(fst input |> Test_common.string_of_string_map)

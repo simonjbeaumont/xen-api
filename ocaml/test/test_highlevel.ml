@@ -41,6 +41,9 @@ module Generic = struct
 		(* The type of outputs from a system being tested. *)
 		type output_t
 
+		(* A comparison function to use for comparing outputs *)
+		val compare : output_t -> output_t -> bool
+
 		(* Helper functions for printing error messages on test failure. *)
 		val string_of_input_t : input_t -> string
 		val string_of_output_t : output_t -> string
@@ -89,7 +92,7 @@ module Generic = struct
 	module Make(T: STATELESS_TEST) = struct
 		let test_equal ~input ~expected_output =
 			let actual_output = T.transform input in
-			assert_equal
+			assert_equal ~cmp:T.Io.compare
 				~msg:(Printf.sprintf
 					"Failure: input = %s, output = %s, expected output = %s"
 					(T.Io.string_of_input_t input)
