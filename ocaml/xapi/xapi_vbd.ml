@@ -165,6 +165,14 @@ let create  ~__context ~vM ~vDI ~userdevice ~bootable ~mode ~_type ~unpluggable 
 	       ~io_read_kbs:0. ~io_write_kbs:0. ~last_updated:(Date.of_float 0.)
 	       ~other_config:[];
 
+		 (* LUN-per-VDI support *)
+		 let other_config =
+			 let sr_ref = Db.VDI.get_SR ~__context ~self:vDI in
+			 let sr_type = Db.SR.get_type ~__context ~self:sr_ref in
+			 if sr_type = "rawhba"
+			 then ("backend-kind", "vbd") :: other_config
+			 else other_config
+		 in
 	     Db.VBD.create ~__context ~ref ~uuid:(Uuid.to_string uuid)
 	       ~current_operations:[] ~allowed_operations:[] ~storage_lock:false
 	       ~vM ~vDI ~userdevice ~device:"" ~bootable ~mode ~_type ~unpluggable ~empty ~reserved:false
