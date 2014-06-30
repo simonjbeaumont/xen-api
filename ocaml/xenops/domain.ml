@@ -748,7 +748,7 @@ let restore_common (task: Xenops_task.t) ~xc ~xs ~hvm ~store_port ~console_port 
 		debug "Detected legacy suspend image! Piping through conversion tool.";
 		let (store_mfn, console_mfn) =
 			begin match
-				with_conversion_script task "xenguest" hvm fd (fun pipe_r ->
+				Legacy.with_conversion_script task "xenguest" hvm fd (fun pipe_r ->
 					restore_libxc_record task ~hvm ~store_port ~console_port
 						~extras xenguest_path domid uuid pipe_r
 				)
@@ -764,7 +764,7 @@ let restore_common (task: Xenops_task.t) ~xc ~xs ~hvm ~store_port ~console_port 
 		if hvm
 		then begin
 			debug "Reading legacy (Xenops-level) QEMU record signature";
-			let length = begin match (read_legacy_qemu_header fd) with
+			let length = begin match (Legacy.read_legacy_qemu_header fd) with
 			| `Ok length -> length
 			| `Error e ->
 				error "VM = %s; domid = %d; Error reading QEMU signature: %s"
@@ -991,7 +991,7 @@ let write_qemu_record domid uuid oss fd =
 		let open Suspend_image in let open Suspend_image.M in
 		(if oss then begin
 			debug "Writing Qemu signature suitable for upstream libxc with length %Ld" size;
-			write_qemu_header_for_upstream_libxc fd size
+			Legacy.write_qemu_header_for_upstream_libxc fd size
 		end else begin
 			debug "Writing Qemu_trad header with length %Ld" size;
 		    write_header fd (Qemu_trad, size)
@@ -1015,13 +1015,13 @@ let suspend (task: Xenops_task.t) ~xc ~xs ~hvm xenguest_path domid fd flags ?(pr
 	let uuid = get_uuid ~xc domid in
 	debug "VM = %s; domid = %d; suspend live = %b" (Uuid.to_string uuid) domid (List.mem Live flags);
 	let open Suspend_image in let open Suspend_image.M in
-	(* Suspend image signature *)
-	debug "Writing save signature: %s" save_signature;
-	Io.write fd save_signature;
-	(* Xenops record *)
-	let xenops_record = Suspend_image.Xenops_record.(to_string (make ())) in
-	let xenops_rec_len = String.length xenops_record in
 	let res =
+		(* Suspend image signature *)
+		debug "Writing save signature";
+		Suspend_image.write_save_signature fd >>= fun () ->
+		(* Xenops record *)
+		let xenops_record = Suspend_image.Xenops_record.(to_string (make ())) in
+		let xenops_rec_len = String.length xenops_record in
 		debug "Writing Xenops header (length=%d)" xenops_rec_len;
 		write_header fd (Xenops, Int64.of_int xenops_rec_len) >>= fun () ->
 		debug "Writing Xenops record contents";
