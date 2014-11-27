@@ -54,6 +54,18 @@ module DBCacheRemoteListener = struct
 		Mutex.execute ctr_mutex
 			(fun () -> calls_processed := !calls_processed + 1);
 
+		let rec maybe_hang (predicate : unit -> bool) =
+			if not (predicate ()) then ()
+			else begin
+				debug "sjbx: hanging...";
+				Thread.delay 2.;
+				maybe_hang predicate
+			end
+		in
+		maybe_hang (fun () ->
+			try Unix.access "/tmp/fist_sctx_1952" [Unix.F_OK]; true with _ -> false
+		);
+
 		let fn_name, args =
 			match (XMLRPC.From.array (fun x->x) xml) with
 					[fn_name; _; args] ->
