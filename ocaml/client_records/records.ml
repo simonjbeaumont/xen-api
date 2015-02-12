@@ -931,6 +931,7 @@ let pool_patch_record rpc session_id patch =
           make_field ~name:"uuid"                ~get:(fun () -> (x ()).API.pool_patch_uuid) ();
           make_field ~name:"name-label"          ~get:(fun () -> (x ()).API.pool_patch_name_label) ();
           make_field ~name:"name-description"    ~get:(fun () -> (x ()).API.pool_patch_name_description) ();
+          make_field ~name:"filename"            ~get:(fun () -> (x ()).API.pool_patch_filename) ();
           make_field ~name:"size"                ~get:(fun () -> Int64.to_string (x ()).API.pool_patch_size) ();
           make_field ~name:"hosts"               ~get:(fun () -> String.concat ", " (get_hosts ())) ~get_set:get_hosts ();
           make_field ~name:"after-apply-guidance" ~get:(fun () -> String.concat ", " (after_apply_guidance ())) ~get_set:after_apply_guidance ();
