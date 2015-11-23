@@ -174,12 +174,6 @@ OCAML_PHASE3_NOXEN = \
 	ocaml/auth/testauthx \
 	ocaml/xe-cli/xe \
 	ocaml/xsh/xsh \
-	ocaml/xe-cli/rt/test_host \
-	ocaml/xe-cli/rt/gtclient \
-	ocaml/xe-cli/rt/gtserver_linux \
-	ocaml/xe-cli/rt/xgetip \
-	ocaml/xe-cli/rt/geneva/cli_test \
-	ocaml/xe-cli/rt/geneva/sm_stress \
 	ocaml/events/event_listen \
 	ocaml/console/console \
 	ocaml/graph/graph \
