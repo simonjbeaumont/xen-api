@@ -19,7 +19,8 @@ Library database
   Install:          false
   InternalModules:  Escaping,
                     Schema
-  BuildDepends:     rpclib.syntax,
+  BuildDepends:     globs,
+                    rpclib.syntax,
                     sexplib.syntax,
                     sexpr,
                     threads,
@@ -61,6 +62,27 @@ Library autogen
                     stdext,
                     threads
 
+Library api
+  Path:             ocaml/autogen
+  Install:          false
+  FindlibParent:    autogen
+  InternalModules:  API
+
+Library util
+  Path:             ocaml/util
+  Install:          false
+  InternalModules:  Version
+  BuildDepends:     threads,
+                    xcp-inventory
+
+Library globs
+  Path:             ocaml/xapi
+  Install:          false
+  InternalModules:  Xapi_globs
+  BuildDepends:     autogen.api
+                    
+
+
 Executable xapi
   Path:             ocaml/xapi
   Install:          false
@@ -68,3 +90,10 @@ Executable xapi
   CompiledObject:   best
   ByteOpt:          -warn-error +1..45
   NativeOpt:        -warn-error +1..45
+  BuildDepends:     autogen,
+                    datamodel,
+                    ocaml_backend,
+                    util,
+                    stdext,
+                    threads,
+                    xcp
