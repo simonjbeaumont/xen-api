@@ -2594,7 +2594,11 @@ let vbd_plug ~__context ~self =
 							let id = Client.VBD.add dbg vbd in
 							info "xenops: VBD.plug %s.%s" (fst vbd.Vbd.id) (snd vbd.Vbd.id);
 							Client.VBD.plug dbg id |> sync_with_task __context queue_name;
-						)
+						);
+						let delay = 10. in
+						info "ca-115029: Xenops VBD.plug finished; delaying %fs after enabling events" delay;
+						Thread.delay delay;
+						info "ca-115029: delay finished"
 				) (fun () -> refresh_vm ~__context ~self:vm);
 			Events_from_xenopsd.wait queue_name dbg (fst vbd.Vbd.id) ();
 			assert (Db.VBD.get_currently_attached ~__context ~self)
