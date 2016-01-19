@@ -1319,7 +1319,11 @@ let update_vm ~__context id =
 							debug "Will update VM.allowed_operations because power_state has changed.";
 							should_update_allowed_operations := true;
 							let power_state = xenapi_of_xenops_power_state (Opt.map (fun x -> (snd x).power_state) info) in
-							debug "xenopsd event: Updating VM %s power_state <- %s" id (Record_util.power_state_to_string power_state);
+							let delay = 10. in
+							debug "ca-195652: Waiting %.1f seconds before changing power-state to %s" delay
+								(Record_util.power_state_to_string power_state);
+							Thread.delay delay;
+							debug "ca-195652: xenopsd event: Updating VM %s power_state <- %s" id (Record_util.power_state_to_string power_state);
 							(* This will mark VBDs, VIFs as detached and clear resident_on
 							   if the VM has permanently shutdown.  current-operations
 							   should not be reset as there maybe a checkpoint is ongoing*)
