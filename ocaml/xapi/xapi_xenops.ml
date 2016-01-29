@@ -1229,7 +1229,7 @@ module Events_from_xenopsd = struct
 		let module Client = (val make_client queue_name : XENOPS) in
 		let t = make () in
 		let id = register t in
-		debug "Client.UPDATES.inject_barrier %d" id;
+		debug "ca-195652: Client.UPDATES.inject_barrier %d" id;
 		Client.UPDATES.inject_barrier dbg vm_id id;
 		Mutex.execute t.m
 			(fun () ->
@@ -1263,7 +1263,7 @@ module Events_from_xenopsd = struct
 		Hashtbl.mem events_suppressed_on vm
 
 	let with_suppressed queue_name dbg vm_id f =
-		debug "suppressing xenops events on VM: %s" vm_id;
+		debug "ca-195652: suppressing xenops events on VM: %s" vm_id;
 		let module Client = (val make_client queue_name : XENOPS) in
 		Mutex.execute events_suppressed_on_m (fun () ->
 			Hashtbl.add events_suppressed_on vm_id ();
@@ -1272,12 +1272,12 @@ module Events_from_xenopsd = struct
 			Mutex.execute events_suppressed_on_m (fun () ->
 				Hashtbl.remove events_suppressed_on vm_id;
 				if not (Hashtbl.mem events_suppressed_on vm_id) then begin
-					debug "re-enabled xenops events on VM: %s; refreshing VM" vm_id;
+					debug "ca-195652: re-enabled xenops events on VM: %s; refreshing VM" vm_id;
 					Client.UPDATES.refresh_vm dbg vm_id;
 					wait queue_name dbg vm_id ();
 					Condition.broadcast events_suppressed_on_c;
 				end else while are_suppressed vm_id do
-					debug "waiting for events to become re-enabled";
+					debug "ca-195652: waiting for events to become re-enabled";
 					Condition.wait events_suppressed_on_c events_suppressed_on_m
 				done;
 			);
@@ -1288,21 +1288,21 @@ let update_vm ~__context id =
 	try
 		let open Vm in
 		if Events_from_xenopsd.are_suppressed id
-		then debug "xenopsd event: ignoring event for VM (VM %s migrating away)" id
+		then debug "ca-195652: xenopsd event: ignoring event for VM (VM %s migrating away)" id
 		else
 			let self = Db.VM.get_by_uuid ~__context ~uuid:id in
 			let localhost = Helpers.get_localhost ~__context in
 			if Db.VM.get_resident_on ~__context ~self <> localhost
-			then debug "xenopsd event: ignoring event for VM (VM %s not resident)" id
+			then debug "ca-195652: xenopsd event: ignoring event for VM (VM %s not resident)" id
 			else
 				let previous = Xenops_cache.find_vm id in
 				let dbg = Context.string_of_task __context in
 				let module Client = (val make_client (queue_of_vm ~__context ~self) : XENOPS) in
 				let info = try Some (Client.VM.stat dbg id) with _ -> None in
 				if Opt.map snd info = previous
-				then debug "xenopsd event: ignoring event for VM %s: metadata has not changed" id
+				then debug "ca-195652: xenopsd event: ignoring event for VM %s: metadata has not changed" id
 				else begin
-					debug "xenopsd event: processing event for VM %s" id;
+					debug "ca-195652: xenopsd event: processing event for VM %s" id;
 					if info = None then debug "xenopsd event: VM state missing: assuming VM has shut down";
 					let should_update_allowed_operations = ref false in
 					let different f =
@@ -1316,7 +1316,7 @@ let update_vm ~__context id =
 					   inject artificial events IF there has been an event sync failure? *)
 					if different (fun x -> x.power_state) then begin
 						try
-							debug "Will update VM.allowed_operations because power_state has changed.";
+							debug "ca-195652: Will update VM.allowed_operations because power_state has changed.";
 							should_update_allowed_operations := true;
 							let power_state = xenapi_of_xenops_power_state (Opt.map (fun x -> (snd x).power_state) info) in
 							let delay = 10. in
@@ -1855,17 +1855,17 @@ let rec events_watch ~__context queue_name from =
 		let open Dynamic in	
 		List.iter
 			(fun ev ->
-				debug "Processing event: %s" (ev |> Dynamic.rpc_of_id |> Jsonrpc.to_string);
+				debug "ca-195652: Processing event: %s" (ev |> Dynamic.rpc_of_id |> Jsonrpc.to_string);
 				if (already_done ev) then 
-					debug "Skipping (already processed this round)"
+					debug "ca-195652: Skipping (already processed this round)"
 				else begin
 					add_event ev;
 					match ev with 
 						| Vm id ->
 							if Events_from_xenopsd.are_suppressed id
-							then debug "ignoring xenops event on VM %s" id
+							then debug "ca-195652: ignoring xenops event on VM %s" id
 							else begin
-								debug "xenops event on VM %s" id;
+								debug "ca-195652: xenops event on VM %s" id;
 								update_vm ~__context id;
 							end
 						| Vbd id ->
@@ -1902,7 +1902,7 @@ let rec events_watch ~__context queue_name from =
 				end) l			
 	in
 	List.iter (fun (id,b_events) -> 
-		debug "Processing barrier %d" id;
+		debug "ca-195652: Processing barrier %d" id;
 		do_updates b_events;
 		Events_from_xenopsd.wakeup queue_name dbg id) barriers;
 	do_updates events;
@@ -1921,6 +1921,9 @@ let events_from_xenopsd queue_name =
 		)
 
 let on_xapi_restart ~__context =
+  debug "ca-195652: delay in on_xapi_restart";
+  Thread.delay 10.;
+  debug "ca-195652: delay in on_xapi_restart over";
 	let dbg = Context.string_of_task __context in
 	let localhost = Helpers.get_localhost ~__context in
 
@@ -2421,6 +2424,7 @@ let start ~__context ~self paused =
 					);
 				set_resident_on ~__context ~self;
 				Events_from_xapi.wait ~__context ~self;
+				debug "ca-195652: Returned from Events_from_xapi.wait";
 			with e ->
 				error "Caught exception starting VM: %s" (string_of_exn e);
 				set_resident_on ~__context ~self;
