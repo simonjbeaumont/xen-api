@@ -509,6 +509,7 @@ let force_state_reset_keep_current_operations ~__context ~self ~value:state =
     the power state, allowed_operations field etc.  Clean current-operations
     as well *)
 let force_state_reset ~__context ~self ~value:state =
+	debug "ca-195652: force_state_reset";
 	if (Db.VM.get_current_operations ~__context ~self) <> [] then
 		Db.VM.set_current_operations ~__context ~self ~value:[];
 	force_state_reset_keep_current_operations ~__context ~self ~value:state
