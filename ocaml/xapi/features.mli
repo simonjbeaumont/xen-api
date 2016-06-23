@@ -46,6 +46,9 @@ type feature =
 	| VSS                          (** Enable use of VSS *)
 	| Guest_agent_auto_update      (** Enable use of the Windows guest agent auto-update feature. *)
 	| PCI_device_for_auto_update   (** Enable making new VMs with the PCI device that triggers Windows Update. *)
+	| Xen_motion                   (** Enable XenMotion feature *)
+	| Guest_ip_setting             (** Enable use of Guest ip seting *)
+	| AD                           (** Enable use of Active Directory *)
 
 (** Convert RPC into {!feature}s *)
 val feature_of_rpc : Rpc.t -> feature

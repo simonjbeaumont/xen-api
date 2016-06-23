@@ -402,6 +402,12 @@ let vif_record rpc session_id vif =
 		~add_to_set:(fun value -> Client.VIF.add_ipv6_allowed rpc session_id vif value)
 		~remove_from_set:(fun value -> Client.VIF.remove_ipv6_allowed rpc session_id vif value)
 		~set:(fun value -> Client.VIF.set_ipv6_allowed rpc session_id vif (String.split ',' value)) ();
+	make_field ~name:"ipv4-configuration-mode" ~get:(fun () -> Record_util.vif_ipv4_configuration_mode_to_string (x ()).API.vIF_ipv4_configuration_mode) ();
+	make_field ~name:"ipv4-addresses" ~get:(fun () -> String.concat "; " (x ()).API.vIF_ipv4_addresses) ();
+	make_field ~name:"ipv4-gateway" ~get:(fun () -> (x ()).API.vIF_ipv4_gateway) ();
+	make_field ~name:"ipv6-configuration-mode" ~get:(fun () -> Record_util.vif_ipv6_configuration_mode_to_string (x ()).API.vIF_ipv6_configuration_mode) ();
+	make_field ~name:"ipv6-addresses" ~get:(fun () -> String.concat "; " (x ()).API.vIF_ipv6_addresses) ();
+	make_field ~name:"ipv6-gateway" ~get:(fun () -> (x ()).API.vIF_ipv6_gateway) ();
       ]}
 
 
@@ -527,6 +533,8 @@ let pool_record rpc session_id pool =
 					Client.Pool.remove_from_guest_agent_config rpc session_id pool k)
 				~get_map:(fun () -> (x ()).API.pool_guest_agent_config)
 				();
+			make_field ~name:"cpu_info" ~get:(fun () -> Record_util.s2sm_to_string "; " (x ()).API.pool_cpu_info) ~get_map:(fun () -> (x ()).API.pool_cpu_info) ();
+			make_field ~name:"policy-no-vendor-device" ~get:(fun () -> string_of_bool (x ()).API.pool_policy_no_vendor_device) ~set:(fun s -> Client.Pool.set_policy_no_vendor_device rpc session_id pool (safe_bool_of_string "policy-no-vendor-device" s)) ();
 		]}
 
 let subject_record rpc session_id subject = 
@@ -870,10 +878,8 @@ let vm_record rpc session_id vm =
 			make_field ~name:"networks"
 				~get:(fun () -> default nid (may (fun m -> Record_util.s2sm_to_string "; " m.API.vM_guest_metrics_networks) (xgm ()) ))
 				~get_map:(fun () -> default [] (may (fun m -> m.API.vM_guest_metrics_networks) (xgm ()))) ();
-			make_field ~name:"network-paths-optimized"
-				~get:(fun () -> default nid (may (fun m -> string_of_bool m.API.vM_guest_metrics_network_paths_optimized) (xgm ()) )) ();
-			make_field ~name:"storage-paths-optimized"
-				~get:(fun () -> default nid (may (fun m -> string_of_bool m.API.vM_guest_metrics_storage_paths_optimized) (xgm ()) )) ();
+			make_field ~name:"PV-drivers-detected"
+				~get:(fun () -> default nid (may (fun m -> string_of_bool m.API.vM_guest_metrics_PV_drivers_detected) (xgm ()) )) ();
 			make_field ~name:"other"
 				~get:(fun () -> default nid (may (fun m -> Record_util.s2sm_to_string "; " m.API.vM_guest_metrics_other) (xgm ()) ))
 				~get_map:(fun () -> default [] (may (fun m -> m.API.vM_guest_metrics_other) (xgm()))) ();
@@ -881,6 +887,10 @@ let vm_record rpc session_id vm =
 				~get:(fun () -> default nid (may (fun m -> string_of_bool m.API.vM_guest_metrics_live) (xgm ()) )) ();
 			make_field ~name:"guest-metrics-last-updated"
 				~get:(fun () -> default nid (may (fun m -> Date.to_string m.API.vM_guest_metrics_last_updated) (xgm ()) )) ();
+			make_field ~name:"can-use-hotplug-vbd"
+				~get:(fun () -> default nid (may (fun m -> Record_util.tristate_to_string m.API.vM_guest_metrics_can_use_hotplug_vbd) (xgm ()) )) ();
+			make_field ~name:"can-use-hotplug-vif"
+				~get:(fun () -> default nid (may (fun m -> Record_util.tristate_to_string m.API.vM_guest_metrics_can_use_hotplug_vif) (xgm ()) )) ();
 			make_field ~name:"cooperative"
 				(* NB this can receive VM_IS_SNAPSHOT *)
 				~get:(fun () -> string_of_bool (try Client.VM.get_cooperative rpc session_id vm with _ -> true))
@@ -908,9 +918,9 @@ let vm_record rpc session_id vm =
 				~get:(fun () -> (x ()).API.vM_generation_id) ();
 			make_field ~name:"hardware-platform-version"
 				~get:(fun () -> Int64.to_string (x ()).API.vM_hardware_platform_version) ();
-			make_field ~name:"auto-update-drivers"
-				~get:(fun () -> string_of_bool (x ()).API.vM_auto_update_drivers)
-				~set:(fun x -> Client.VM.set_auto_update_drivers rpc session_id vm (safe_bool_of_string "auto-update-drivers" x)) ();
+			make_field ~name:"has-vendor-device"
+				~get:(fun () -> string_of_bool (x ()).API.vM_has_vendor_device)
+				~set:(fun x -> Client.VM.set_has_vendor_device rpc session_id vm (safe_bool_of_string "has-vendor-device" x)) ();
 		]}
 
 let host_crashdump_record rpc session_id host = 
@@ -1086,6 +1096,7 @@ let host_record rpc session_id host =
 			make_field ~name:"virtual-hardware-platform-versions" 
 				~get:(fun () -> String.concat "; " (List.map Int64.to_string (x ()).API.host_virtual_hardware_platform_versions)) 
 				~get_set:(fun () -> List.map Int64.to_string (x ()).API.host_virtual_hardware_platform_versions) ();
+			make_field ~name:"control-domain-uuid" ~get:(fun () -> get_uuid_from_ref (x ()).API.host_control_domain) ();
 		]}
 
 let vdi_record rpc session_id vdi =
@@ -1133,6 +1144,7 @@ let vdi_record rpc session_id vdi =
 			make_field ~name:"managed" ~get:(fun () -> string_of_bool (x ()).API.vDI_managed) ();
 			make_field ~name:"parent" ~get:(fun () -> get_uuid_from_ref (x ()).API.vDI_parent) ();
 			make_field ~name:"missing" ~get:(fun () -> string_of_bool (x ()).API.vDI_missing) ();
+			make_field ~name:"is-tools-iso" ~get:(fun () -> string_of_bool (x ()).API.vDI_is_tools_iso) ();
 			make_field ~name:"other-config" ~get:(fun () -> Record_util.s2sm_to_string "; " (x ()).API.vDI_other_config)
 				~add_to_map:(fun k v -> Client.VDI.add_to_other_config rpc session_id vdi k v)
 				~remove_from_map:(fun k -> Client.VDI.remove_from_other_config rpc session_id vdi k)
@@ -1319,6 +1331,7 @@ let sr_record rpc session_id sr =
 				~set:(fun x -> Client.SR.set_shared rpc session_id sr (safe_bool_of_string "shared" x)) ();
 			make_field ~name:"introduced-by"
 				~get:(fun () -> (get_uuid_from_ref (x ()).API.sR_introduced_by)) ();
+			make_field ~name:"is-tools-sr" ~get:(fun () -> string_of_bool (x ()).API.sR_is_tools_sr) ();
 			make_field ~name:"other-config" ~get:(fun () -> Record_util.s2sm_to_string "; " (x ()).API.sR_other_config)
 				~add_to_map:(fun k v -> Client.SR.add_to_other_config rpc session_id sr k v)
 				~remove_from_map:(fun k -> Client.SR.remove_from_other_config rpc session_id sr k)

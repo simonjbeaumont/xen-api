@@ -39,8 +39,6 @@ export PRODUCT_VERSION_TEXT_SHORT
 build: $(OUTPUT_CLI_RT) $(OUTPUT_SDK) $(MY_SOURCES)/MANIFEST
 	$(call mkdir_clean,$(MY_MAIN_CDFILES)/client_install)
 	install -m 755 $(RPM_RPMSDIR)/$(DOMAIN0_ARCH_OPTIMIZED)/xapi-xe-*.rpm $(MY_MAIN_CDFILES)/client_install/xe-cli-$(PRODUCT_VERSION)-$(BUILD_NUMBER).$(DOMAIN0_ARCH_OPTIMIZED).rpm
-	# Copy in the 32-bit CLI from clearwater RTM build
-	install -m 755 $(CARBON_DISTFILES)/xe-cli-32bit/xe-cli-6.2.0-70442c.i686.rpm $(MY_MAIN_CDFILES)/client_install/xe-cli-6.2.0-70442c.i686.rpm
 	# Delete this as soon as xenrt has been updated to fetch the file from
 	# the new place:
 	$(call mkdir_clean,$(MY_LINUX_CDFILES)/client_install)
@@ -88,8 +86,6 @@ $(OUTPUT_CLI_RT) $(OUTPUT_SDK): $(MY_MAIN_PACKAGES)/.dirstamp $(RPM_DIRECTORIES)
 	cp $(RPM_RPMSDIR)/$(DOMAIN0_ARCH_OPTIMIZED)/xapi-tests-*.rpm $(MY_MAIN_PACKAGES)
 	cp $(RPM_RPMSDIR)/*/xapi-www-*.rpm $(MY_MAIN_PACKAGES)
 	cp $(RPM_RPMSDIR)/$(DOMAIN0_ARCH_OPTIMIZED)/xapi-xe-*.rpm $(MY_MAIN_PACKAGES)
-	mkdir -p $(MY_XCP_PACKAGES)
-	cp $(RPM_RPMSDIR)/$(DOMAIN0_ARCH_OPTIMIZED)/xapi-v6d-*.rpm $(MY_XCP_PACKAGES)
 
 .PHONY: clean
 clean:

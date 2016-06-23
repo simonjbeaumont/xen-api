@@ -1,8 +1,8 @@
 OCAMLPACKS = oUnit sexpr xcp xmlm stunnel xml-light2 http-svr uuid	\
-             netdev tapctl xenctrl xenctrlext xenstore-compat cpuid	\
+             netdev tapctl xenctrl xenctrlext xenstore-compat	\
              pciutil oclock gzip sha1 xcp.network xcp.rrd xcp.storage	\
              xcp.xen xcp.memory tar tar.unix oPasswd xcp-inventory \
-             rrdd-plugin pci
+             rrdd-plugin pci xapi-test-utils
 
 OCAMLINCLUDES = \
 	../database \
@@ -25,17 +25,20 @@ OCAML_LIBS = \
 OCAML_OBJS = \
 	../idl/api_lowlevel \
 	mock \
-	test_highlevel \
-	test_printers \
+	test_state \
 	test_common \
 	test_basic \
+	test_agility \
 	test_helpers \
+	test_datamodel_utils \
 	test_db_lowlevel \
+	test_daemon_manager \
 	test_http \
 	test_pool_db_backup \
 	test_xapi_db_upgrade \
 	test_ca91480 \
 	test_vdi_allowed_operations \
+	test_ha_vm_failover \
 	test_map_check \
 	test_pool_apply_edition \
 	test_pool_license \
@@ -49,10 +52,15 @@ OCAML_OBJS = \
 	test_pgpu_helpers \
 	test_storage_migrate_state \
 	test_vm_helpers \
+	test_vm_migrate \
 	test_xenopsd_metadata \
 	test_ca121350 \
 	test_workload_balancing \
-	test_pbd \
+	test_cpuid_helpers \
+	test_pool_cpuinfo \
+	../license/daily_license_check \
+	test_daily_license_check \
+	test_dbsync_master \
 
 OCamlProgram(suite, suite $(OCAML_OBJS) )
 

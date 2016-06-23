@@ -65,13 +65,36 @@ let valid_operations ~__context record _ref' : table =
       let expected = Record_util.power_to_string `Running in
       set_errors Api_errors.vm_bad_power_state [ Ref.string_of vm; expected; actual ] [ `plug; `unplug ]);
 
-  (* HVM guests only support plug/unplug IF they have PV drivers *)
+  (* VIF plug/unplug must fail for current_operations
+   * like [clean_shutdown; hard_shutdown; suspend; pause] on VM *)
+  let vm_current_ops = Db.VM.get_current_operations ~__context ~self:vm in
+  List.iter (fun (task,op) ->
+    if List.mem op [ `clean_shutdown; `hard_shutdown; `suspend; `pause ] then begin
+      let current_op_str = "Current operation on VM:" ^ (Ref.string_of vm) ^ " is "
+        ^ (Record_util.vm_operation_to_string op) in
+      set_errors Api_errors.operation_not_allowed [ current_op_str ] [ `plug; `unplug ]
+    end
+  ) vm_current_ops;
+
+  (* HVM guests MAY support plug/unplug IF they have PV drivers. Assume
+   * all drivers have such support unless they specify that they do not. *)
   let vm_gm = Db.VM.get_guest_metrics ~__context ~self:vm in
   let vm_gmr = try Some (Db.VM_guest_metrics.get_record_internal ~__context ~self:vm_gm) with _ -> None in
   if power_state = `Running && Helpers.has_booted_hvm ~__context ~self:vm
-  then (match Xapi_pv_driver_version.make_error_opt (Xapi_pv_driver_version.of_guest_metrics vm_gmr) vm with
-  | Some(code, params) -> set_errors code params [ `plug; `unplug ]
-  | None -> ());
+  then (
+    let fallback () =
+      match Xapi_pv_driver_version.make_error_opt (Xapi_pv_driver_version.of_guest_metrics vm_gmr) vm with
+        | Some(code, params) -> set_errors code params [ `plug; `unplug ]
+        | None -> () in
+
+    match vm_gmr with
+      | None -> fallback ()
+      | Some gmr -> (
+        match gmr.Db_actions.vM_guest_metrics_can_use_hotplug_vif with
+          | `yes -> () (* Drivers have made an explicit claim of support. *)
+          | `no -> set_errors Api_errors.operation_not_allowed ["VM states it does not support VIF hotplug."] [`plug; `unplug]
+          | `unspecified -> fallback ())
+  );
 
   table
 
@@ -143,14 +166,15 @@ let gen_mac(dev, seed) =
 	 take_byte 2 mac_data_2; |]
 
 let assert_locking_licensed ~__context =
-	if (not (Pool_features.is_enabled ~__context Features.VIF_locking)) then
-		raise (Api_errors.Server_error(Api_errors.license_restriction, []))
+	Pool_features.assert_enabled ~__context ~f:Features.VIF_locking
 
 let m = Mutex.create () (* prevents duplicate VIFs being created by accident *)
 
 let create ~__context ~device ~network ~vM
            ~mAC ~mTU ~other_config ~qos_algorithm_type ~qos_algorithm_params
-           ~currently_attached ~locking_mode ~ipv4_allowed ~ipv6_allowed : API.ref_VIF =
+           ~currently_attached ~locking_mode ~ipv4_allowed ~ipv6_allowed
+           ~ipv4_configuration_mode ~ipv4_addresses ~ipv4_gateway
+           ~ipv6_configuration_mode ~ipv6_addresses ~ipv6_gateway : API.ref_VIF =
         let () = debug "VIF.create running" in
 
 	if locking_mode = `locked || ipv4_allowed <> [] || ipv6_allowed <> [] then
@@ -183,7 +207,7 @@ let create ~__context ~device ~network ~vM
 	  && Db.Pool.get_ha_enabled ~__context ~self:pool
 	  && not(Db.Pool.get_ha_allow_overcommit ~__context ~self:pool)
 	  && Helpers.is_xha_protected ~__context ~self:vM
-	  && not(Helpers.is_network_properly_shared ~__context ~self:network) then begin
+	  && not(Agility.is_network_properly_shared ~__context ~self:network) then begin
 	    warn "Creating VIF %s makes VM %s not agile" (Ref.string_of ref) (Ref.string_of vM);
 	    raise (Api_errors.Server_error(Api_errors.ha_operation_would_break_failover_plan, []))
 	end;
@@ -208,7 +232,9 @@ let create ~__context ~device ~network ~vM
 	  ~status_code:0L ~status_detail:""
 	  ~runtime_properties:[] ~other_config
 	  ~metrics ~locking_mode
-	  ~ipv4_allowed ~ipv6_allowed in ()
+	  ~ipv4_allowed ~ipv6_allowed
+	  ~ipv4_configuration_mode ~ipv4_addresses ~ipv4_gateway 
+	  ~ipv6_configuration_mode ~ipv6_addresses ~ipv6_gateway in ()
 	  );
 	update_allowed_operations ~__context ~self:ref;
 	debug "VIF ref='%s' created (VM = '%s'; MAC address = '%s')" (Ref.string_of ref) (Ref.string_of vM) mAC; 
@@ -245,4 +271,10 @@ let copy ~__context ~vm ~preserve_mac_address vif =
 		~locking_mode:all.API.vIF_locking_mode
 		~ipv4_allowed:all.API.vIF_ipv4_allowed
 		~ipv6_allowed:all.API.vIF_ipv6_allowed
+		~ipv4_configuration_mode:all.API.vIF_ipv4_configuration_mode
+		~ipv4_addresses:all.API.vIF_ipv4_addresses
+		~ipv4_gateway:all.API.vIF_ipv4_gateway
+		~ipv6_configuration_mode:all.API.vIF_ipv6_configuration_mode
+		~ipv6_addresses:all.API.vIF_ipv6_addresses
+		~ipv6_gateway:all.API.vIF_ipv6_gateway
 

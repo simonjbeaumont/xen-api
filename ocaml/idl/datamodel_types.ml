@@ -51,7 +51,10 @@ let rel_clearwater_felton = "clearwater-felton"
 let rel_clearwater_whetstone = "clearwater-whetstone"
 let rel_creedence = "creedence"
 let rel_cream = "cream"
+let rel_indigo = "indigo"
 let rel_dundee = "dundee"
+let rel_dundee_plus = "dundee-plus"
+let rel_ely = "ely"
 
 let release_order =
 	[ rel_rio
@@ -71,7 +74,10 @@ let release_order =
 	; rel_clearwater_whetstone
 	; rel_creedence
 	; rel_cream
+	; rel_indigo
 	; rel_dundee
+	; rel_dundee_plus
+	; rel_ely
 	]
 
 exception Unknown_release of string
@@ -103,6 +109,7 @@ type api_value =
   | VMap of (api_value*api_value) list
   | VSet of api_value list
   | VRef of string
+  | VCustom of string * api_value
 	with rpc
 	
 (** Each database field has a qualifier associated with it:
@@ -267,6 +274,7 @@ type obj = {
 	contents : content list;
 	messages : message list;
 	doccomments : (string * string) list;
+	msg_lifecycles: ((string * (lifecycle_transition list)) list);
 	gen_constructor_destructor: bool;
 	force_custom_actions: qualifier option; (* None,Some(RW),Some(StaticRO) *)
 	obj_allowed_roles: string list option; (* for construct, destruct and explicit obj msgs*)
@@ -301,6 +309,7 @@ let rec type_checks v t =
   | VSet vl, Set t ->
       all_true (List.map (fun v->type_checks v t) vl)
   | VRef r, Ref _ -> true
+  | VCustom _, _ -> true (* Type checks defered to phase-2 compile time *)
   | _, _ -> false
 
 module TypeToXML = struct

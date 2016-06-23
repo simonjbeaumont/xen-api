@@ -33,6 +33,11 @@ let asynchronously_run_hook_script_after_subject_add =
 	At_least_once_more.make "running after-subject-add hook script" run_hook_script_after_subject_add
 
 let create ~__context ~subject_identifier ~other_config =
+	(* If at least one of the hosts uses AD external auth, then assert that the AD feature is enabled *)
+	let hosts = Db.Host.get_all ~__context in
+	let auth_types = List.map (fun self -> Db.Host.get_external_auth_type ~__context ~self) hosts in
+	if List.exists (fun x -> x = Extauth.auth_type_AD_Likewise) auth_types then
+		Pool_features.assert_enabled ~__context ~f:Features.AD;
 	
 	(* we need to find if subject is already in the pool *)
 	let subjects = Db.Subject.get_all_records ~__context in
@@ -177,9 +182,7 @@ let add_to_roles ~__context ~self ~role =
 	
 	(* CP-1224: Free Edition: Attempts to add or remove roles *)
 	(* will fail with a LICENSE_RESTRICTION error.*)
-	if (not (Pool_features.is_enabled ~__context Features.RBAC)) then
-		raise (Api_errors.Server_error(Api_errors.license_restriction, []))
-	else
+	Pool_features.assert_enabled ~__context ~f:Features.RBAC;
 
 	if (Xapi_role.is_valid_role ~__context ~role)
 	then
@@ -215,9 +218,7 @@ let remove_from_roles ~__context ~self ~role =
 
 	(* CP-1224: Free Edition: Attempts to add or remove roles *)
 	(* will fail with a LICENSE_RESTRICTION error.*)
-	if not (Pool_features.is_enabled ~__context Features.RBAC) then
-		raise (Api_errors.Server_error(Api_errors.license_restriction, []))
-	else
+	Pool_features.assert_enabled ~__context ~f:Features.RBAC;
 
 	if (List.mem role (Db.Subject.get_roles ~__context ~self))
 	then

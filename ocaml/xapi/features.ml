@@ -46,6 +46,9 @@ type feature =
 	| VSS
 	| Guest_agent_auto_update
 	| PCI_device_for_auto_update
+	| Xen_motion
+	| Guest_ip_setting
+	| AD
 	with rpc
 
 type orientation = Positive | Negative
@@ -81,6 +84,9 @@ let keys_of_features =
 		VSS, ("restrict_vss", Negative, "VSS");
 		Guest_agent_auto_update, ("restrict_guest_agent_auto_update", Negative, "GAAU");
 		PCI_device_for_auto_update, ("restrict_pci_device_for_auto_update", Negative, "PciAU");
+		Xen_motion, ("restrict_xen_motion", Negative, "XenMotion");
+		Guest_ip_setting, ("restrict_guest_ip_setting", Negative, "GuestIP");
+		AD, ("restrict_ad", Negative, "AD");
 	]
 
 let name_of_feature f =

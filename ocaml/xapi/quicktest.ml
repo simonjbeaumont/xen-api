@@ -310,7 +310,14 @@ let setup_export_test_vm session_id =
   debug test (Printf.sprintf "Template has uuid: %s%!" uuid);
   let vm = vm_install test session_id uuid "quicktest-export" in
   debug test (Printf.sprintf "Installed new VM");
-  let cd = List.hd (Client.VDI.get_by_name_label !rpc session_id "xs-tools.iso") in
+  let cd =
+    let tools_iso_filter = "field \"is_tools_iso\"=\"true\"" in
+    match Client.VDI.get_all_records_where !rpc session_id tools_iso_filter with
+    | (vdi, _)::_ -> vdi
+    | [] ->
+      failed test "Failed to find tools ISO VDI";
+      failwith "setup_export_test_vm";
+  in
   debug test "Looking for the SR which supports the smallest disk size";
   let all_srs = all_srs_with_vdi_create session_id in
   let smallest : int64 option list = List.map (fun sr -> Quicktest_storage.find_smallest_disk_size session_id sr) all_srs in
@@ -320,12 +327,13 @@ let setup_export_test_vm session_id =
 	     | sr, None -> debug test (Printf.sprintf "SR %s has no minimum disk size!" sr)
 	    ) (List.combine sr_names smallest);
   let minimum = List.fold_left min (1L ** gib) (List.map (fun x -> Opt.default (1L ** gib) x) smallest) in
-  let possible_srs = List.filter (fun (sr, size) -> size = Some minimum) (List.combine all_srs smallest) in
-  if List.length possible_srs = 0 then begin
-    failed test "Failed to find an SR which can create a VDI";
-    failwith "setup_export_test_vm";
-  end;
-  let sr = fst (List.hd possible_srs) in
+  let sr =
+    match List.filter (fun (_, size) -> size = Some minimum) (List.combine all_srs smallest) with
+    | (sr, _)::_ -> sr
+    | [] ->
+      failed test "Failed to find an SR which can create a VDI";
+      failwith "setup_export_test_vm";
+  in
   debug test (Printf.sprintf "Using a disk size of: %Ld on SR: %s" minimum (Quicktest_storage.name_of_sr session_id sr));
   let vdi = Client.VDI.create !rpc session_id "small"
     "description" sr 4194304L `user false false [] [] [] [] in
@@ -709,11 +717,7 @@ let vdi_test session_id =
   debug test (Printf.sprintf "Time to create: %f%!" createtime);
   let pbd = List.hd (Client.SR.get_PBDs !rpc session_id sr) in
   let host = Client.PBD.get_host !rpc session_id pbd in
-  let vms = Client.VM.get_all !rpc session_id in
-  let filter vm =
-    Client.VM.get_is_control_domain !rpc session_id vm &&
-      Client.VM.get_resident_on !rpc session_id vm = host in
-  let dom0 = List.find filter vms in
+  let dom0 = dom0_of_host session_id host in
   let device = List.hd (Client.VM.get_allowed_VBD_devices !rpc session_id dom0) in
   debug test (Printf.sprintf "Creating a VBD connecting the VDI to localhost%!");
   let vbd = Client.VBD.create ~rpc:!rpc ~session_id ~vM:dom0 ~vDI:newvdi ~userdevice:device ~bootable:false
@@ -740,11 +744,7 @@ let async_test session_id =
     "description" sr 4194304L `user false false [] [] [] [] in
   let pbd = List.hd (Client.SR.get_PBDs !rpc session_id sr) in
   let host = Client.PBD.get_host !rpc session_id pbd in
-  let vms = Client.VM.get_all !rpc session_id in
-  let filter vm =
-    Client.VM.get_is_control_domain !rpc session_id vm &&
-      Client.VM.get_resident_on !rpc session_id vm = host in
-  let dom0 = List.find filter vms in
+  let dom0 = dom0_of_host session_id host in
   let device = List.hd (Client.VM.get_allowed_VBD_devices !rpc session_id dom0) in
   let vbd = Client.VBD.create ~rpc:!rpc ~session_id ~vM:dom0 ~vDI:newvdi ~userdevice:device ~bootable:false
     ~mode:`RW ~_type:`Disk ~unpluggable:true ~empty:false ~other_config:[] ~qos_algorithm_type:"" ~qos_algorithm_params:[] in
@@ -852,6 +852,7 @@ let _ =
 		assert (List.mem name all_tests);
 		if List.mem name !tests_to_run then f () in
 
+	Stunnel.set_good_ciphersuites "!EXPORT:RSA+AES128-SHA256";
 	let s = init_session !username !password in
         let all_srs = all_srs_with_vdi_create s in
         let sr = List.hd all_srs in

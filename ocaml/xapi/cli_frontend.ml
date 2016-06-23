@@ -814,24 +814,6 @@ let rec cmdtable_data : (string*cmd_spec) list =
       flags=[];
     };
 
-   "host-set-cpu-features",
-    {
-      reqd=["features"];
-      optn=["uuid"];
-      help="Attempts to mask the host's physical-CPU features to match the given features. The given string must be a 32-digit hexadecimal number (optionally containing spaces), as given by host-get-cpu-features.";
-      implementation=No_fd Cli_operations.host_set_cpu_features;
-      flags=[];
-    };
-
-   "host-reset-cpu-features",
-    {
-      reqd=[];
-      optn=["uuid"];
-      help="Removes the feature mask of the host's physical CPU (if any).";
-      implementation=No_fd Cli_operations.host_reset_cpu_features;
-      flags=[];
-    };
-
    "host-enable-display",
     {
       reqd=["uuid"];
@@ -2000,6 +1982,22 @@ add a mapping of 'path' -> '/tmp', the command line should contain the argument 
       implementation=No_fd Cli_operations.vif_unplug;
       flags=[];
     };
+   "vif-configure-ipv4",
+    {
+      reqd=["uuid"; "mode"];
+      optn=["address"; "gateway"];
+      help="Configure IPv4 settings on a VIF.";
+      implementation=No_fd Cli_operations.vif_configure_ipv4;
+      flags=[];
+    };
+   "vif-configure-ipv6",
+    {
+      reqd=["uuid"; "mode"];
+      optn=["address"; "gateway"];
+      help="Configure IPv6 settings on a VIF.";
+      implementation=No_fd Cli_operations.vif_configure_ipv6;
+      flags=[];
+    };
    "vm-create",
     {
       reqd=["name-label"];
@@ -2103,6 +2101,22 @@ add a mapping of 'path' -> '/tmp', the command line should contain the argument 
      flags=[Host_selectors];
    };
 
+   "host-license-add",
+    {
+      reqd=["license-file"];
+      optn=["host-uuid"];
+      help="Add a license to a host.";
+      implementation=With_fd Cli_operations.host_license_add;
+      flags=[];
+    };
+   "host-license-remove",
+    {
+      reqd=[];
+      optn=["host-uuid"];
+      help="Remove any licensing applied to a host.";
+      implementation=No_fd Cli_operations.host_license_remove;
+      flags=[];
+    };
    "host-license-view",
     {
       reqd=[];

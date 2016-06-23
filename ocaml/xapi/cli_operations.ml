@@ -1574,6 +1574,22 @@ let vif_unplug printer rpc session_id params =
 	let force = get_bool_param params "force" in
 	(if force then Client.VIF.unplug_force else Client.VIF.unplug) rpc session_id vif
 
+let vif_configure_ipv4 printer rpc session_id params =
+	let vif = Client.VIF.get_by_uuid rpc session_id (List.assoc "uuid" params) in
+	let mode = Record_util.vif_ipv4_configuration_mode_of_string (List.assoc "mode" params) in
+	let address = List.assoc_default "address" params "" in
+	let gateway = List.assoc_default "gateway" params "" in
+	if mode = `Static && address = "" then failwith "Required parameter not found: address";
+	Client.VIF.configure_ipv4 rpc session_id vif mode address gateway
+
+let vif_configure_ipv6 printer rpc session_id params =
+	let vif = Client.VIF.get_by_uuid rpc session_id (List.assoc "uuid" params) in
+	let mode = Record_util.vif_ipv6_configuration_mode_of_string (List.assoc "mode" params) in
+	let address = List.assoc_default "address" params "" in
+	let gateway = List.assoc_default "gateway" params "" in
+	if mode = `Static && address = "" then failwith "Required parameter not found: address";
+	Client.VIF.configure_ipv6 rpc session_id vif mode address gateway
+
 let net_create printer rpc session_id params =
 	let network = List.assoc "name-label" params in
 	let descr = List.assoc_default "name-description" params "" in
@@ -1619,7 +1635,6 @@ let vm_create printer rpc session_id params =
 		~version:0L
 		~generation_id:""
 		~hardware_platform_version:0L
-		~auto_update_drivers:false
 		~has_vendor_device:false
 	in
 	let uuid=Client.VM.get_uuid rpc session_id vm in
@@ -2287,6 +2302,23 @@ let vm_pause printer rpc session_id params =
 let vm_unpause printer rpc session_id params =
 	ignore(do_vm_op printer rpc session_id (fun vm -> Client.VM.unpause rpc session_id (vm.getref ())) params [])
 
+(* A helper function for VM install *)
+let is_recommended recommendations_xml fieldname =
+	let rec seek_recommendation i =
+		if Xmlm.eoi i then false
+		else match Xmlm.input i with
+			| `El_start ((ns, tag), attrs)
+				when tag = "restriction" && (List.mem ((ns, "field"), fieldname) attrs)
+					-> List.mem ((ns, "value"), "true") attrs
+			| _ -> seek_recommendation i
+	in
+	let i = Xmlm.make_input (`String (0, recommendations_xml)) in
+	try
+		seek_recommendation i
+	with Xmlm.Error ((line, col), err) ->
+		debug "Invalid VM.recommendations xml at line %d, column %d: %s" line col (Xmlm.error_message err);
+		false
+
 let vm_install_real printer rpc session_id template name description params =
 
 	let sr_ref =
@@ -2363,6 +2395,19 @@ Pool. Please provide an sr-name-label or sr-uuid parameter." in
 		Client.VM.set_name_description rpc session_id new_vm description;
 		Client.VM.set_suspend_SR rpc session_id new_vm suspend_sr_ref;
 		rewrite_provisioning_xml rpc session_id new_vm sr_uuid;
+		let recommendations = Client.VM.get_recommendations rpc session_id template in
+		let licerr = Api_errors.Server_error(Api_errors.license_restriction, [Features.name_of_feature Features.PCI_device_for_auto_update]) in
+		let pool = List.hd (Client.Pool.get_all rpc session_id) in
+		let policy_vendor_device_is_ok = not (Client.Pool.get_policy_no_vendor_device rpc session_id pool) in
+		let want_dev = (is_recommended recommendations "has-vendor-device") && policy_vendor_device_is_ok in
+		(
+			try Client.VM.set_has_vendor_device rpc session_id new_vm want_dev
+			with e when e = licerr ->
+				let msg = Printf.sprintf "Note: the VM template recommends setting has-vendor-device=true (to provide the option of obtaining PV drivers through Windows Update), but a suitable licence has not been deployed for this host. Ignoring this recommendation and continuing with installation of VM %S..."
+					(Client.VM.get_name_label rpc session_id new_vm) in
+				warn "%s" msg;
+				Cli_printer.PStderr (msg^"\n") |> printer
+		);
 		Client.VM.provision rpc session_id new_vm;
 		(* Client.VM.start rpc session_id new_vm false true; *)  (* stop install starting VMs *)
 
@@ -2951,6 +2996,35 @@ let host_careful_op op fd printer rpc session_id params =
 let host_forget x = host_careful_op Client.Host.destroy x
 let host_declare_dead x = host_careful_op (fun ~rpc ~session_id ~self -> Client.Host.declare_dead ~rpc ~session_id ~host:self) x
 
+let host_license_add fd printer rpc session_id params =
+	let host =
+		if List.mem_assoc "host-uuid" params then
+			Client.Host.get_by_uuid rpc session_id (List.assoc "host-uuid" params)
+		else
+			get_host_from_session rpc session_id in
+	let license_file = List.assoc "license-file" params in
+	match get_client_file fd license_file with
+		| Some license ->
+			debug "Checking license [%s]" license;
+			(try
+				Client.Host.license_add rpc session_id host (Base64.encode license);
+				marshal fd (Command (Print "License applied."))
+			with _ ->
+				marshal fd (Command (PrintStderr "Failed to apply license file.\n"));
+				raise (ExitWithError 1)
+			)
+		| None ->
+			marshal fd (Command (PrintStderr "Failed to read license file.\n"));
+			raise (ExitWithError 1)
+
+let host_license_remove printer rpc session_id params =
+	let host =
+		if List.mem_assoc "host-uuid" params then
+			Client.Host.get_by_uuid rpc session_id (List.assoc "host-uuid" params)
+		else
+			get_host_from_session rpc session_id in
+	Client.Host.license_remove rpc session_id host
+
 let host_license_view printer rpc session_id params =
 	let host =
 		if List.mem_assoc "host-uuid" params then
@@ -2958,8 +3032,7 @@ let host_license_view printer rpc session_id params =
 		else
 			get_host_from_session rpc session_id in
 	let params = Client.Host.get_license_params rpc session_id host in
-	(* CA-26992 hide 'sockets' and 'sku_type' *)
-	let tohide = [ "sockets"; "sku_type" ] in
+	let tohide = [ "sku_type" ] in
 	let params = List.filter (fun (x, _) -> not (List.mem x tohide)) params in
 	printer (Cli_printer.PTable [params])
 
@@ -4155,23 +4228,6 @@ let host_get_cpu_features printer rpc session_id params =
 	let cpu_info = Client.Host.get_cpu_info rpc session_id host in
 	let features = List.assoc "features" cpu_info in
 	printer (Cli_printer.PMsg features)
-
-let host_set_cpu_features printer rpc session_id params =
-	let host =
-		if List.mem_assoc "uuid" params then
-			Client.Host.get_by_uuid rpc session_id (List.assoc "uuid" params)
-		else
-			get_host_from_session rpc session_id in
-	let features = List.assoc "features" params in
-	Client.Host.set_cpu_features rpc session_id host features
-
-let host_reset_cpu_features printer rpc session_id params =
-	let host =
-		if List.mem_assoc "uuid" params then
-			Client.Host.get_by_uuid rpc session_id (List.assoc "uuid" params)
-		else
-			get_host_from_session rpc session_id in
-	Client.Host.reset_cpu_features rpc session_id host
 
 let host_enable_display printer rpc session_id params =
 	let host = Client.Host.get_by_uuid rpc session_id (List.assoc "uuid" params) in

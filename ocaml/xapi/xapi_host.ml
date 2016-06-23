@@ -113,12 +113,19 @@ let assert_bacon_mode ~__context ~host =
 		let vm_data = [selfref; "vm"; Ref.string_of (List.hd guest_vms)] in
 		raise (Api_errors.Server_error (Api_errors.host_in_use, vm_data)));
 	debug "Bacon test: VMs OK - %d running VMs" (List.length vms);
-	let controldomain = List.find (fun vm -> Db.VM.get_resident_on ~__context ~self:vm = host &&
-			Db.VM.get_is_control_domain ~__context ~self:vm) (Db.VM.get_all ~__context) in
-	let vbds = List.filter (fun vbd -> Db.VBD.get_VM ~__context ~self:vbd = controldomain &&
-			Db.VBD.get_currently_attached ~__context ~self:vbd) (Db.VBD.get_all ~__context) in
-	if List.length vbds > 0 then
-		raise (Api_errors.Server_error (Api_errors.host_in_use, [ selfref; "vbd"; List.hd (List.map Ref.string_of vbds) ]));
+	let control_domain_vbds =
+		List.filter (fun vm ->
+				Db.VM.get_resident_on ~__context ~self:vm = host
+				&& Db.VM.get_is_control_domain ~__context ~self:vm
+		) (Db.VM.get_all ~__context)
+		|> List.map (fun self -> Db.VM.get_VBDs ~__context ~self)
+		|> List.flatten
+		|> List.filter (fun self -> Db.VBD.get_currently_attached ~__context ~self) in
+	if List.length control_domain_vbds > 0 then
+		raise (Api_errors.Server_error (
+			Api_errors.host_in_use,
+			[ selfref; "vbd"; List.hd (List.map Ref.string_of control_domain_vbds) ]
+		));
 	debug "Bacon test: VBDs OK"
 
 let signal_networking_change ~__context =
@@ -316,7 +323,8 @@ let compute_evacuation_plan_wlb ~__context ~self =
 	*)
 	let resident_h = (Db.VM.get_resident_on ~__context ~self:v) in
 	let target_uuid = List.hd (List.tl detail) in
-	if get_dom0_vm ~__context target_uuid != v &&  Db.Host.get_uuid ~__context ~self:resident_h = target_uuid
+	let target_host = Db.Host.get_by_uuid ~__context ~uuid:target_uuid in
+	if Db.Host.get_control_domain ~__context ~self:target_host != v &&  Db.Host.get_uuid ~__context ~self:resident_h = target_uuid
 	then
 	  (* resident host and migration host are the same. Reject this plan *)
 	  raise (Api_errors.Server_error
@@ -565,13 +573,13 @@ let is_host_alive ~__context ~host =
 	false
   end
 
-let create ~__context ~uuid ~name_label ~name_description ~hostname ~address ~external_auth_type ~external_auth_service_name ~external_auth_configuration ~license_params ~edition ~license_server ~local_cache_sr ~chipset_info =
+let create ~__context ~uuid ~name_label ~name_description ~hostname ~address ~external_auth_type ~external_auth_service_name ~external_auth_configuration ~license_params ~edition ~license_server ~local_cache_sr ~chipset_info ~ssl_legacy =
 
   let make_new_metrics_object ref =
 	Db.Host_metrics.create ~__context ~ref
 	  ~uuid:(Uuid.to_string (Uuid.make_uuid ())) ~live:false
 	  ~memory_total:0L ~memory_free:0L ~last_updated:Date.never ~other_config:[] in
-  let name_description = "Default install of XenServer"
+  let name_description = "Default install"
   and host = Ref.make () in
 
   let metrics = Ref.make () in
@@ -606,10 +614,11 @@ let create ~__context ~uuid ~name_label ~name_description ~hostname ~address ~ex
 	~power_on_mode:""
 	~power_on_config:[]
 	~local_cache_sr
-	~ssl_legacy:true
+	~ssl_legacy
 	~guest_VCPUs_params:[]
 	~display:`enabled
 	~virtual_hardware_platform_versions:(if host_is_us then Xapi_globs.host_virtual_hardware_platform_versions else [0L])
+	~control_domain:Ref.null
   ;
   (* If the host we're creating is us, make sure its set to live *)
   Db.Host_metrics.set_last_updated ~__context ~self:metrics ~value:(Date.of_float (Unix.gettimeofday ()));
@@ -654,7 +663,9 @@ let destroy ~__context ~self =
   Xapi_hooks.host_post_declare_dead ~__context ~host:self ~reason:Xapi_hooks.reason__dbdestroy;
 
   Db.Host.destroy ~__context ~self;
-  List.iter (fun vm -> Db.VM.destroy ~__context ~self:vm) my_control_domains
+  Create_misc.create_pool_cpuinfo ~__context;
+  List.iter (fun vm -> Db.VM.destroy ~__context ~self:vm) my_control_domains;
+  Pool_features.update_pool_features ~__context
 
 let declare_dead ~__context ~host =
 	precheck_destroy_declare_dead ~__context ~self:host "declare_dead";
@@ -1298,8 +1309,38 @@ let apply_edition ~__context ~host ~edition ~force =
 		let additional = if force then ["force", "true"] else [] in
 		apply_edition_internal ~__context ~host ~edition ~additional
 
-let license_apply ~__context ~host ~contents =
-	raise (Api_errors.Server_error (Api_errors.message_removed, []))
+let license_add ~__context ~host ~contents =
+	let license =
+		try
+			Base64.decode contents
+		with _ ->
+			error "Base64 decoding of supplied license has failed";
+			raise Api_errors.(Server_error(license_processing_error, []))
+	in
+	let tmp = "/tmp/new_license" in
+	finally
+		(fun () ->
+			begin try
+				Unixext.write_string_to_file tmp license
+			with _ ->
+				let s = "Failed to write temporary file." in
+				raise Api_errors.(Server_error(internal_error, [s]))
+			end;
+			let edition', features, additional = V6client.apply_edition ~__context "" ["license_file", tmp] in
+			Db.Host.set_edition ~__context ~self:host ~value:edition';
+			copy_license_to_db ~__context ~host ~features ~additional
+		)
+		(fun () ->
+			(* The license will have been moved to a standard location if it was valid, and
+			 * should be removed otherwise -> always remove the file at the tmp path, if any. *)
+			Unixext.unlink_safe tmp
+		)
+
+let license_remove ~__context ~host =
+	let edition', features, additional =
+		V6client.apply_edition ~__context "" ["license_file", ""] in
+	Db.Host.set_edition ~__context ~self:host ~value:edition';
+	copy_license_to_db ~__context ~host ~features ~additional
 
 (* Supplemental packs *)
 
@@ -1339,52 +1380,6 @@ let reset_networking ~__context ~host =
 		end;
 		Db.PIF.destroy ~__context ~self;
 	) local_pifs
-
-(* CPU feature masking *)
-
-let set_cpu_features ~__context ~host ~features =
-	debug "Set CPU features";
-	(* check restrictions *)
-	if not (Pool_features.is_enabled ~__context Features.CPU_masking) then
-		raise (Api_errors.Server_error (Api_errors.feature_restricted, []));
-
-	let cpuid = Cpuid.read_cpu_info () in
-
-	(* parse features string *)
-	let features =
-		try Cpuid.string_to_features features
-		with Cpuid.InvalidFeatureString e ->
-			raise (Api_errors.Server_error (Api_errors.invalid_feature_string, [e]))
-	in
-
-	(* check masking is possible *)
-	begin try
-		Cpuid.assert_maskability cpuid cpuid.Cpuid.manufacturer features
-	with
-	| Cpuid.MaskingNotSupported e ->
-		raise (Api_errors.Server_error (Api_errors.cpu_feature_masking_not_supported, [e]))
-	| Cpuid.InvalidFeatureString e ->
-		raise (Api_errors.Server_error (Api_errors.invalid_feature_string, [e]))
-	| Cpuid.ManufacturersDiffer -> () (* cannot happen *)
-	end;
-
-	(* add masks to Xen command line *)
-	ignore (Xen_cmdline.delete_cpuid_masks ["cpuid_mask_ecx"; "cpuid_mask_edx"; "cpuid_mask_ext_ecx"; "cpuid_mask_ext_edx"]);
-	let new_masks = Cpuid.xen_masking_string cpuid features in
-	ignore (Xen_cmdline.set_cpuid_masks new_masks);
-
-	(* update database *)
-	let cpu_info = Db.Host.get_cpu_info ~__context ~self:host in
-	let cpu_info = List.replace_assoc "features_after_reboot" (Cpuid.features_to_string features) cpu_info in
-	Db.Host.set_cpu_info ~__context ~self:host ~value:cpu_info
-
-let reset_cpu_features ~__context ~host =
-	debug "Reset CPU features";
-	ignore (Xen_cmdline.delete_cpuid_masks ["cpuid_mask_ecx"; "cpuid_mask_edx"; "cpuid_mask_ext_ecx"; "cpuid_mask_ext_edx"]);
-	let cpu_info = Db.Host.get_cpu_info ~__context ~self:host in
-	let physical_features = List.assoc "physical_features" cpu_info in
-	let cpu_info = List.replace_assoc "features_after_reboot" physical_features cpu_info in
-	Db.Host.set_cpu_info ~__context ~self:host ~value:cpu_info
 
 (* Local storage caching *)
 

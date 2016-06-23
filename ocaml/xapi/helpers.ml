@@ -310,7 +310,11 @@ let get_user ~__context username =
         failwith "Failed to find any users";
     List.hd uuids (* FIXME! it assumes that there is only one element in the list (root), username is not used*)
 
-(* Expects only 1 control domain per host; just return first in list for now if multiple.. *)
+let is_domain_zero ~__context vm_ref =
+  let host_ref = Db.VM.get_resident_on ~__context ~self:vm_ref in
+  Db.VM.get_is_control_domain ~__context ~self:vm_ref
+  && Db.Host.get_control_domain ~__context ~self:host_ref = vm_ref
+
 exception No_domain_zero of string
 let domain_zero_ref_cache = ref None
 let domain_zero_ref_cache_mutex = Mutex.create ()
@@ -324,14 +328,14 @@ let get_domain_zero ~__context : API.ref_VM =
 	 let uuid = Xapi_inventory.lookup Xapi_inventory._control_domain_uuid in
 	 try
 	   let vm = Db.VM.get_by_uuid ~__context ~uuid in
-	   if not (Db.VM.get_is_control_domain ~__context ~self:vm) then begin
-	     error "VM uuid %s is not a control domain but the uuid is in my inventory file" uuid;
+	   if not (is_domain_zero ~__context vm) then begin
+	     error "VM uuid %s is not domain zero but the uuid is in my inventory file" uuid;
 	     raise (No_domain_zero uuid);
 	   end;
 	   domain_zero_ref_cache := Some vm;
 	   vm
 	 with _ ->
-	   error "Failed to find control domain (uuid = %s)" uuid;
+	   error "Failed to find domain zero (uuid = %s)" uuid;
 	   raise (No_domain_zero uuid)
     )
 
@@ -509,21 +513,19 @@ let boot_method_of_vm ~__context ~vm =
 (** Returns true if the supplied VM configuration is HVM.
     NB that just because a VM's current configuration looks like HVM doesn't imply it
     actually booted that way; you must check the boot_record to be sure *)
-let is_hvm (x: API.vM_t) = not(x.API.vM_is_control_domain) && x.API.vM_HVM_boot_policy <> ""
+let is_hvm (x: API.vM_t) = x.API.vM_HVM_boot_policy <> ""
 
 let will_boot_hvm ~__context ~self = Db.VM.get_HVM_boot_policy ~__context ~self <> ""
 
 let has_booted_hvm ~__context ~self =
-  (not (Db.VM.get_is_control_domain ~__context ~self))
-  &&
-    let boot_record = get_boot_record ~__context ~self in
-    boot_record.API.vM_HVM_boot_policy <> ""
+  let boot_record = get_boot_record ~__context ~self in
+  boot_record.API.vM_HVM_boot_policy <> ""
 
 let has_booted_hvm_of_record ~__context r =
-  (not (r.Db_actions.vM_is_control_domain))
-  &&
-    let boot_record = get_boot_record_of_record ~__context ~string:r.Db_actions.vM_last_booted_record ~uuid:r.Db_actions.vM_uuid in
-    boot_record.API.vM_HVM_boot_policy <> ""
+  let boot_record =
+    get_boot_record_of_record ~__context
+      ~string:r.Db_actions.vM_last_booted_record ~uuid:r.Db_actions.vM_uuid in
+  boot_record.API.vM_HVM_boot_policy <> ""
 
 let is_running ~__context ~self = Db.VM.get_domid ~__context ~self <> -1L
 
@@ -730,15 +732,6 @@ let get_vif_metrics ~__context ~self =
     then failwith "Could not locate VIF_metrics object for VIF: internal error"
     else metrics
 
-(* Lookup a VDI field from a list of pre-fetched records *)
-let lookup_vdi_fields f vdi_refs l =
-  let rec do_lookup ref l =
-    match l with
-    [] -> None
-      | ((r,rcd)::rs) -> if ref=r then Some (f rcd) else do_lookup ref rs in
-  let field_ops = List.map (fun r->do_lookup r l) vdi_refs in
-  List.fold_right (fun m acc -> match m with None -> acc | Some x -> x :: acc) field_ops []
-
 (* Read pool secret if it exists; otherwise, create a new one. *)
 let get_pool_secret () =
 	try
@@ -822,76 +815,33 @@ let cancel_tasks ~__context ~ops ~all_tasks_in_db (* all tasks in database *) ~t
     Currently this just means "CD" but might change in future? *)
 let is_removable ~__context ~vbd = Db.VBD.get_type ~__context ~self:vbd = `CD
 
-let is_tools_sr_cache = ref []
-let tools_sr_memoised = ref None
-(* Use this mutex for the above refs, and probably for any refs
- * of future ISO VDIs we might add alongside the tools ISO. *)
-let tools_sr_and_iso_m = Mutex.create ()
+(* IP address and CIDR checks *)
 
-let clear_tools_sr_cache () =
-	Mutex.execute tools_sr_and_iso_m
-		(fun () ->
-			is_tools_sr_cache := []
-			;tools_sr_memoised := None
-		)
+let is_valid_ip kind address =
+	match Unixext.domain_of_addr address, kind with
+	| Some x, `ipv4 when x = Unix.PF_INET -> true
+	| Some x, `ipv6 when x = Unix.PF_INET6 -> true
+	| _ -> false
 
-(** Returns true if this SR is the XenSource Tools SR *)
-let is_tools_sr ~__context ~sr =
+let assert_is_valid_ip kind field address =
+	if not (is_valid_ip kind address) then
+		raise Api_errors.(Server_error (invalid_ip_address_specified, [field]))
+
+let parse_cidr kind cidr =
 	try
-		Mutex.execute tools_sr_and_iso_m
-			(fun () ->
-				match !tools_sr_memoised with
-					| Some s when s = sr -> true
-					| Some _ (* We could return false except for nervousness about adding an assumption of only one Tools SR *)
-					| None -> List.assoc sr !is_tools_sr_cache
-			)
-	with Not_found ->
-		let other_config = Db.SR.get_other_config ~__context ~self:sr in
-		(* Miami GA *)
-		let result = (
-			List.mem_assoc Xapi_globs.tools_sr_tag other_config
-			(* Miami beta2 and earlier: *)
-			|| (List.mem_assoc Xapi_globs.xensource_internal other_config)
-		) && (
-			"iso" = Db.SR.get_content_type ~__context ~self:sr
-		) in
-		Mutex.execute tools_sr_and_iso_m
-			(fun () ->
-				let cache = !is_tools_sr_cache in
-				if not (List.mem_assoc sr cache) then
-					is_tools_sr_cache := (sr, result) :: !is_tools_sr_cache);
-		result
+		let address, prefixlen = Scanf.sscanf cidr "%s@/%d" (fun a p -> a, p) in
+		if not (is_valid_ip kind address) then
+			(error "Invalid address in CIDR (%s)" address; None)
+		else if prefixlen < 0 || (kind = `ipv4 && prefixlen > 32) || (kind = `ipv6 && prefixlen > 128) then
+			(error "Invalid prefix length in CIDR (%d)" prefixlen; None)
+		else
+			Some (address, prefixlen)
+	with _ ->
+		(error "Invalid CIDR format (%s)" cidr; None)
 
-let get_with_memo ~seeker ~memo ~mtx =
-	match Mutex.execute mtx (fun () -> !memo)
-	with
-		| Some x -> x
-		| None ->
-			let x = seeker () in
-			Mutex.execute mtx (fun () -> memo := Some x);
-			x
-
-(** Returns the XenSource Tools SR; fails if there is not exactly one such SR.
- *  Memoises the result, so calls after the first one are quick and cheap. *)
-let get_tools_sr ~__context =
-	let seek_tools_sr () =
-		let candidates = Db.SR.get_refs_where ~__context ~expr:(
-			And (
-				Or (
-					Eq (Field "name__label", Literal Xapi_globs.miami_tools_sr_name),
-					Eq (Field "name__label", Literal Xapi_globs.rio_tools_sr_name) (* In case of ancient hosts that have been upgraded repeatedly? *)
-				),
-				Eq (Field "content_type", Literal "iso")
-			)
-		) in
-		let srs = List.filter (fun sr ->
-			is_tools_sr ~__context ~sr
-		) candidates in
-		if List.length srs <> 1 then failwith
-			("Expected exactly one Tools SR; found " ^ string_of_int (List.length srs));
-		List.hd srs
-	in
-	get_with_memo ~seeker:seek_tools_sr ~memo:tools_sr_memoised ~mtx:tools_sr_and_iso_m
+let assert_is_valid_cidr kind field cidr =
+	if parse_cidr kind cidr = None then
+		raise Api_errors.(Server_error (invalid_cidr_address_specified, [field]))
 
 (** Return true if the MAC is in the right format XX:XX:XX:XX:XX:XX *)
 let is_valid_MAC mac =
@@ -1005,129 +955,6 @@ let is_xha_protected ~__context ~self =
 let is_xha_protected_r record = vm_should_always_run record.API.vM_ha_always_run record.API.vM_ha_restart_priority
 
 open Listext
-
-let subset a b = List.fold_left (fun acc x -> acc && (List.mem x b)) true a
-
-(* Only returns true if the SR is marked as shared, all hosts have PBDs and all PBDs are currently_attached.
-   Is used to prevent a non-shared disk being added to a protected VM *)
-let is_sr_properly_shared ~__context ~self =
-  let shared = Db.SR.get_shared ~__context ~self in
-  if not shared then begin
-    false
-  end else begin
-    let pbds = Db.SR.get_PBDs ~__context ~self in
-    let plugged_pbds = List.filter (fun pbd -> Db.PBD.get_currently_attached ~__context ~self:pbd) pbds in
-    let plugged_hosts = List.setify (List.map (fun pbd -> Db.PBD.get_host ~__context ~self:pbd) plugged_pbds) in
-    let all_hosts = Db.Host.get_all ~__context in
-    let enabled_hosts = List.filter (fun host -> Db.Host.get_enabled ~__context ~self:host) all_hosts in
-    if not(subset enabled_hosts plugged_hosts) then begin
-      warn "SR %s not shared properly: Not all enabled hosts have a currently_attached PBD" (Ref.string_of self);
-      false
-    end else true
-  end
-
-let get_pif_underneath_vlan ~__context vlan_pif_ref =
-  let vlan_rec = Db.PIF.get_VLAN_master_of ~__context ~self:vlan_pif_ref in
-  Db.VLAN.get_tagged_PIF ~__context ~self:vlan_rec
-
-(* Only returns true if the network is shared properly: all (enabled) hosts in the pool must have a PIF on
- * the network, and none of these PIFs may be bond slaves. This ensures that a VM with a VIF on this
- * network can run on (and be migrated to) any (enabled) host in the pool. *)
-let is_network_properly_shared ~__context ~self =
-	let pifs = Db.Network.get_PIFs ~__context ~self in
-	let non_slave_pifs = List.filter (fun pif ->
-		not (Db.is_valid_ref __context (Db.PIF.get_bond_slave_of ~__context ~self:pif))) pifs in
-	let hosts_with_pif = List.setify (List.map (fun pif -> Db.PIF.get_host ~__context ~self:pif) non_slave_pifs) in
-	let all_hosts = Db.Host.get_all ~__context in
-	let enabled_hosts = List.filter (fun host -> Db.Host.get_enabled ~__context ~self:host) all_hosts in
-	let properly_shared = subset enabled_hosts hosts_with_pif in
-	if not properly_shared then
-		warn "Network %s not shared properly: Not all hosts have PIFs" (Ref.string_of self);
-	properly_shared
-
-module SRSet = Set.Make(struct type t = API.ref_SR let compare = compare end)
-module NetworkSet = Set.Make(struct type t = API.ref_network let compare = compare end)
-
-let empty_cache = (SRSet.empty, NetworkSet.empty)
-
-let caching_vm_t_assert_agile ~__context (ok_srs, ok_networks) vm vm_t =
-	(* Any kind of vGPU means that the VM is not agile. *)
-	if vm_t.API.vM_VGPUs <> [] then
-		raise (Api_errors.Server_error
-			(Api_errors.vm_has_vgpu, [Ref.string_of vm]));
-	(* All referenced VDIs should be in shared SRs *)
-	let check_vbd ok_srs vbd =
-		if Db.VBD.get_empty ~__context ~self:vbd
-		then ok_srs
-		else
-			let vdi = Db.VBD.get_VDI ~__context ~self:vbd in
-			let sr = Db.VDI.get_SR ~__context ~self:vdi in
-			if SRSet.mem sr ok_srs
-			then ok_srs
-			else
-				if not (is_sr_properly_shared ~__context ~self:sr)
-				then raise (Api_errors.Server_error(Api_errors.ha_constraint_violation_sr_not_shared, [Ref.string_of sr]))
-				else SRSet.add sr ok_srs in
-	(* All referenced VIFs should be on shared networks *)
-	let check_vif ok_networks vif =
-		let network = Db.VIF.get_network ~__context ~self:vif in
-		if NetworkSet.mem network ok_networks
-		then ok_networks
-		else
-			if not (is_network_properly_shared ~__context ~self:network)
-			then raise (Api_errors.Server_error(Api_errors.ha_constraint_violation_network_not_shared, [Ref.string_of network]))
-			else NetworkSet.add network ok_networks in
-	let ok_srs = List.fold_left check_vbd ok_srs vm_t.API.vM_VBDs in
-	let ok_networks = List.fold_left check_vif ok_networks vm_t.API.vM_VIFs in
-	(ok_srs, ok_networks)
-
-let vm_assert_agile ~__context ~self =
-	let vm_t = Db.VM.get_record ~__context ~self in
-	let _ = caching_vm_t_assert_agile ~__context empty_cache self vm_t in
-	()
-
-let partition_vm_ps_by_agile ~__context vm_ps =
-	let distinguish_vm (agile_vm_ps, not_agile_vm_ps, cache) ((vm, vm_t) as vm_p) =
-		try
-			let cache = caching_vm_t_assert_agile ~__context cache vm vm_t in
-			(vm_p :: agile_vm_ps, not_agile_vm_ps, cache)
-		with _ ->
-		  (agile_vm_ps, vm_p :: not_agile_vm_ps, cache) in
-	let agile_vm_ps, not_agile_vm_ps, _ = List.fold_left distinguish_vm ([], [], empty_cache) vm_ps in
-	(List.rev agile_vm_ps, List.rev not_agile_vm_ps)
-
-(* Select an item from a list with a probability proportional to the items weight / total weight of all items *)
-let weighted_random_choice weighted_items (* list of (item, integer) weight *) =
-  let total_weight, acc' = List.fold_left (fun (total, acc) (x, weight) -> (total + weight), (x, total + weight) :: acc) (0, []) weighted_items in
-  let cumulative = List.rev acc' in
-
-  let w = Random.int total_weight in (* w \in [0, total_weight-1] *)
-  let a, b = List.partition (fun (_, cumulative_weight) -> cumulative_weight <= w) cumulative in
-  fst (List.hd b)
-
-let memusage () =
-	let memtotal, memfree, swaptotal, swapfree, buffers, cached =
-		ref None, ref None, ref None, ref None, ref None, ref None in
-	let find_field key s v =
-		if String.startswith key s then
-			let vs = List.hd (List.filter ((<>) "") (List.tl (String.split ' ' s))) in
-			v := Some (float_of_string vs) in
-	try
-		Unixext.file_lines_iter
-			(fun s ->
-				 find_field "MemTotal" s memtotal;
-				 find_field "MemFree" s memfree;
-				 find_field "SwapTotal" s swaptotal;
-				 find_field "SwapFree" s swapfree;
-				 find_field "Buffers" s buffers;
-				 find_field "Cached" s cached)
-			"/proc/meminfo";
-		match !memtotal, !memfree, !swaptotal, !swapfree, !buffers, !cached with
-		| Some mt, Some mf, Some st, Some sf, Some bu, Some ca ->
-			  let su = if st = 0. then 0. else (st -. sf) /. st in
-			  (mt -. mf -. (bu +. ca) *. (1. -. su)) /. mt
-		| _ -> raise Exit
-	with _ -> - 1.
 
 let local_storage_exists () =
   (try ignore(Unix.stat (Xapi_globs.xapi_blob_location)); true

@@ -244,8 +244,6 @@ let check_no_other_masters() =
 	       (* transition to slave and restart *)
 	       begin
 		 try
-		   (* Belt-n-braces *)
-		   if !Xapi_globs.manage_xenvmd then Xapi_xenvmd.kill_non_sr_master_xenvmds ();
 		   (* now become a slave of the new master we found... *)
 		   Pool_role.set_role (Pool_role.Slave master_address);
 		 with
@@ -693,6 +691,11 @@ let set_stunnel_timeout () =
 (* Consult inventory, because to do DB lookups we must contact the
  * master, and to do that we need to start an outgoing stunnel. *)
 let set_stunnel_legacy_inv ~__context () =
+  Stunnel.set_good_ciphersuites (match !Xapi_globs.ciphersuites_good_outbound with
+    | None -> raise (Api_errors.Server_error (Api_errors.internal_error,["Configuration file does not specify ciphersuites-good-outbound."]))
+    | Some s -> s
+  );
+  Stunnel.set_legacy_ciphersuites !Xapi_globs.ciphersuites_legacy_outbound;
   let s = Xapi_inventory.lookup Xapi_inventory._stunnel_legacy ~default:"true" in
   let legacy = try
 	  bool_of_string s
@@ -935,8 +938,7 @@ let server_init() =
       "executing startup scripts", [ Startup.NoExnRaising], startup_script;
 
       "considering executing on-master-start script", [],
-      (fun () -> Xapi_pool_transition.run_external_scripts (Pool_role.is_master ()));
-      "starting xenvmd daemons", [ Startup.OnlyMaster], (fun () -> if !Xapi_globs.manage_xenvmd then Xapi_xenvmd.start_xenvmds_for_shared_srs ());
+        (fun () -> Xapi_pool_transition.run_external_scripts (Pool_role.is_master ()));
       "creating networks", [ Startup.OnlyMaster ], Create_networks.create_networks_localhost;
       "updating the vswitch controller", [], (fun () -> Helpers.update_vswitch_controller ~__context ~host:(Helpers.get_localhost ~__context)); 
       (* CA-22417: bring up all non-bond slaves so that the SM backends can use storage NIC IP addresses (if the routing
@@ -953,6 +955,7 @@ let server_init() =
       "Synchronising tunnels on slave with master", [Startup.OnlySlave; Startup.NoExnRaising], Sync_networking.copy_tunnels_from_master ~__context;
 
       "SR scanning", [ Startup.OnlyMaster; Startup.OnThread ], Xapi_sr.scanning_thread;
+      "Updating pool cpu_info", [], (fun () -> Create_misc.create_pool_cpuinfo ~__context);
       "writing init complete", [], (fun () -> Helpers.touch_file !Xapi_globs.init_complete);
 (*      "Synchronising HA state with Pool", [ Startup.NoExnRaising ], Xapi_ha.synchronise_ha_state_with_pool; *)
 			"Starting DR redo-logs", [ Startup.OnlyMaster; ], start_dr_redo_logs;

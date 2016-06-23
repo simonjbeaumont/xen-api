@@ -91,15 +91,20 @@ type state = {
 
 let initial_state export = { table = []; created_vms = []; cleanup = []; export = export }
 
-let log_reraise msg f x = try f x with e -> error "Import failed: %s" msg; raise e
+let log_reraise msg f x =
+	try f x
+	with e ->
+		Backtrace.is_important e;
+		error "Import failed: %s" msg;
+		raise e
 
 let lookup x (table: table) =
 	let id = Ref.string_of x in
 	try
 		let (_,_,r) = List.find (fun (_,i,_) -> i=id) table in
 		Ref.of_string r
-	with Not_found ->
-		raise (IFailure (Failed_to_find_object id))
+	with Not_found as e ->
+		Backtrace.reraise e (IFailure (Failed_to_find_object id))
 
 let exists x (table: table) =
 	let id = Ref.string_of x in
@@ -111,8 +116,8 @@ let find_in_export x export =
 	try
 		let obj = List.find (fun obj -> obj.id = x) export in
 		obj.snapshot
-	with Not_found ->
-		raise (IFailure (Failed_to_find_object x))
+	with Not_found as e->
+		Backtrace.reraise e (IFailure (Failed_to_find_object x))
 
 let choose_one = function
 	| x :: [] -> Some x
@@ -400,6 +405,10 @@ module VM : HandlerTools = struct
 					}
 				end else vm_record
 			in
+			let vm_record =
+				if vm_has_field ~x ~name:"has_vendor_device" then vm_record else (
+					{vm_record with API.vM_has_vendor_device = false;}
+				) in
 			let vm_record = {vm_record with API.
 				vM_memory_overhead = Memory_check.vm_compute_memory_overhead vm_record
 			} in
@@ -423,7 +432,9 @@ module VM : HandlerTools = struct
 			let vm = log_reraise
 				("failed to create VM with name-label " ^ vm_record.API.vM_name_label)
 				(fun value ->
-					let vm = Client.VM.create_from_record rpc session_id value in
+					let vm = Xapi_vm_helpers.create_from_record_without_checking_licence_feature_for_vendor_device
+						~__context rpc session_id value
+					in
 					if config.full_restore then Db.VM.set_uuid ~__context ~self:vm ~value:value.API.vM_uuid;
 					vm)
 				vm_record in
@@ -449,6 +460,7 @@ module VM : HandlerTools = struct
 					Db.VM.set_power_state ~__context ~self:vm ~value:`Suspended;
 					Db.VM.set_suspend_VDI ~__context ~self:vm ~value:vdi
 				with e -> if not config.force then begin
+					Backtrace.is_important e;
 					let msg = "Failed to find VM's suspend_VDI: " ^ (Ref.string_of vm_record.API.vM_suspend_VDI) in
 					error "Import failed: %s" msg;
 					raise e
@@ -537,12 +549,14 @@ module GuestMetrics : HandlerTools = struct
 			~memory:gm_record.API.vM_guest_metrics_memory
 			~disks:gm_record.API.vM_guest_metrics_disks
 			~networks:gm_record.API.vM_guest_metrics_networks
-			~network_paths_optimized:gm_record.API.vM_guest_metrics_network_paths_optimized
-			~storage_paths_optimized:gm_record.API.vM_guest_metrics_storage_paths_optimized
+			~pV_drivers_detected:gm_record.API.vM_guest_metrics_PV_drivers_detected
 			~other:gm_record.API.vM_guest_metrics_other
 			~last_updated:gm_record.API.vM_guest_metrics_last_updated
 			~other_config:gm_record.API.vM_guest_metrics_other_config
-			~live:gm_record.API.vM_guest_metrics_live;
+			~live:gm_record.API.vM_guest_metrics_live
+			~can_use_hotplug_vbd:gm_record.API.vM_guest_metrics_can_use_hotplug_vbd
+			~can_use_hotplug_vif:gm_record.API.vM_guest_metrics_can_use_hotplug_vif
+		;
 		state.table <- (x.cls, x.id, Ref.string_of gm) :: state.table
 end
 
@@ -1283,6 +1297,7 @@ let handle_all __context config rpc session_id (xs: obj list) =
 			update_snapshot_and_parent_links ~__context state;
 		state
 	with e ->
+		Backtrace.is_important e;
 		error "Caught exception in import: %s" (ExnHelper.string_of_exn e);
 		(* execute all the cleanup actions now *)
 		if config.force
@@ -1374,7 +1389,10 @@ let complete_import ~__context vmrefs =
 
 			(* We only set the result on the task since it is officially completed later. *)
 			TaskHelper.set_result ~__context (Some (API.rpc_of_ref_VM_set vmrefs))
-	with e -> error "Caught exception completing import: %s" (ExnHelper.string_of_exn e); raise e
+	with e ->
+		Backtrace.is_important e;
+		error "Caught exception completing import: %s" (ExnHelper.string_of_exn e);
+		raise e
 
 let find_query_flag query key =
 	List.mem_assoc key query && (List.assoc key query = "true")
@@ -1385,37 +1403,44 @@ let read_map_params name params =
 	List.map (fun (k,v) -> String.sub k len (String.length k - len),v) filter_params
 
 let with_error_handling f =
-	try f ()
+	match Backtrace.with_backtraces f
 	with
-	| IFailure failure ->
-		 begin
-			 match failure with
-			 | Cannot_handle_chunked ->
-				  error "import code cannot handle chunked encoding";
-				 raise (Api_errors.Server_error (Api_errors.import_error_cannot_handle_chunked, []))
-			 | Some_checksums_failed ->
-				  error "some checksums failed";
-				 raise (Api_errors.Server_error (Api_errors.import_error_some_checksums_failed, []))
-			 | Failed_to_find_object id ->
-				  error "Failed to find object with ID: %s" id;
-				 raise (Api_errors.Server_error (Api_errors.import_error_failed_to_find_object, [id]))
-			 | Attached_disks_not_found ->
-				  error "Cannot import guest with currently attached disks which cannot be found";
-				 raise (Api_errors.Server_error (Api_errors.import_error_attached_disks_not_found, []))
-			 | Unexpected_file (expected, actual) ->
-				  let hex = Tar_unix.Header.to_hex in
-				  error "Invalid XVA file: import expects the next file in the stream to be \"%s\" [%s]; got \"%s\" [%s]"
-					  expected (hex expected) actual (hex actual);
-				  raise (Api_errors.Server_error (Api_errors.import_error_unexpected_file, [expected; actual]))
-		 end
-	| Api_errors.Server_error(code, params) as e ->
-		 raise e
-	| End_of_file ->
-		 error "Prematurely reached end-of-file during import";
-		raise (Api_errors.Server_error (Api_errors.import_error_premature_eof, []))
-	| e ->
-		 error "Import caught exception: %s" (ExnHelper.string_of_exn e);
-		raise (Api_errors.Server_error (Api_errors.import_error_generic, [ (ExnHelper.string_of_exn e) ]))
+	| `Ok result -> result
+	| `Error (e, backtrace) -> begin
+		Debug.log_backtrace e backtrace;
+		let reraise = Backtrace.reraise e in
+		match e with
+		| IFailure failure ->
+			begin
+				match failure with
+				| Cannot_handle_chunked ->
+					error "import code cannot handle chunked encoding";
+					reraise (Api_errors.Server_error (Api_errors.import_error_cannot_handle_chunked, []))
+				| Some_checksums_failed ->
+					error "some checksums failed";
+					reraise (Api_errors.Server_error (Api_errors.import_error_some_checksums_failed, []))
+				| Failed_to_find_object id ->
+					error "Failed to find object with ID: %s" id;
+					reraise (Api_errors.Server_error (Api_errors.import_error_failed_to_find_object, [id]))
+				| Attached_disks_not_found ->
+					error "Cannot import guest with currently attached disks which cannot be found";
+					reraise (Api_errors.Server_error (Api_errors.import_error_attached_disks_not_found, []))
+				| Unexpected_file (expected, actual) ->
+					let hex = Tar_unix.Header.to_hex in
+					error "Invalid XVA file: import expects the next file in the stream to be \"%s\" [%s]; got \"%s\" [%s]"
+						expected (hex expected) actual (hex actual);
+					reraise (Api_errors.Server_error (Api_errors.import_error_unexpected_file, [expected; actual]))
+			end
+		| Api_errors.Server_error(code, params) as e ->
+			Backtrace.is_important e;
+			raise e
+		| End_of_file ->
+			error "Prematurely reached end-of-file during import";
+			reraise (Api_errors.Server_error (Api_errors.import_error_premature_eof, []))
+		| e ->
+			error "Import caught exception: %s" (ExnHelper.string_of_exn e);
+			reraise (Api_errors.Server_error (Api_errors.import_error_generic, [ (ExnHelper.string_of_exn e) ]))
+	end
 
 (** Import metadata only *)
 let metadata_handler (req: Request.t) s _ =
@@ -1465,6 +1490,7 @@ let metadata_handler (req: Request.t) s _ =
 						complete_import ~__context vmrefs;
 						info "import_metadata successful";
 					with e ->
+						Backtrace.is_important e;
 						error "Caught exception during import: %s" (ExnHelper.string_of_exn e);
 						if force
 						then warn "Not cleaning up after import failure since --force provided: %s" (ExnHelper.string_of_exn e)
@@ -1538,6 +1564,7 @@ let stream_import __context rpc session_id s content_length refresh_session conf
 						Listext.List.setify (List.map (fun (cls,id,r) -> Ref.of_string r) state.created_vms)
 
 					with e ->
+						Backtrace.is_important e;
 						error "Caught exception during import: %s" (ExnHelper.string_of_exn e);
 						if config.force
 						then warn "Not cleaning up after import failure since --force provided: %s" (ExnHelper.string_of_exn e)

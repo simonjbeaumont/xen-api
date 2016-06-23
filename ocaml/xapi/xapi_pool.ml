@@ -184,27 +184,19 @@ let pre_join_checks ~__context ~rpc ~session_id ~force =
 
 	let assert_no_shared_srs_on_me () =
 		let my_srs = Db.SR.get_all_records ~__context in
-		let my_shared_srs = List.filter (fun (sr,srec)-> srec.API.sR_shared && not (Helpers.is_tools_sr ~__context ~sr)) my_srs in
+		let my_shared_srs = List.filter (fun (sr,srec)-> srec.API.sR_shared && not srec.API.sR_is_tools_sr) my_srs in
 		if not (my_shared_srs = []) then begin
 			error "The current host has shared SRs: it cannot join a new pool";
                         raise (Api_errors.Server_error(Api_errors.pool_joining_host_cannot_contain_shared_SRs, []))
 		end in
 
-	let assert_no_network_bond_on_me () =
-                let my_network_bonds = Db.Bond.get_all_records ~__context in
-		if not (my_network_bonds = []) then begin
-                        error "The current host has a network bond: it cannot join a new pool";
-                        raise (Api_errors.Server_error(Api_errors.pool_joining_host_cannot_contain_network_bond, []))
-                end in
-
-	let assert_management_interface_is_physical () =
-		let pifs = Db.PIF.get_refs_where ~__context ~expr:(And (
-			Eq (Field "management", Literal "true"),
+	let assert_only_physical_pifs () =
+		let non_physical_pifs = Db.PIF.get_refs_where ~__context ~expr:(
 			Eq (Field "physical", Literal "false")
-		)) in
-		if pifs <> [] then begin
-			error "The current host has a management interface which is not physical: cannot join a new pool";
-			raise (Api_errors.Server_error(Api_errors.pool_joining_host_must_have_physical_management_nic, []));
+		) in
+		if non_physical_pifs <> [] then begin
+			error "The current host has network bonds, VLANs or tunnels: it cannot join a new pool";
+			raise (Api_errors.Server_error(Api_errors.pool_joining_host_must_only_have_physical_pifs, []))
 		end in
 
 	(* Used to tell XCP and XenServer apart - use PRODUCT_BRAND if present, else use PLATFORM_NAME. *)
@@ -280,45 +272,16 @@ let pre_join_checks ~__context ~rpc ~session_id ~force =
 		
 		(* Check CPUs *)
 		
-		let master_cpu_info = master.API.host_cpu_info in
-		let my_cpu_info = Db.Host.get_cpu_info ~__context ~self:me in
-		let pool_other_config = 
+		let my_cpu_vendor = Db.Host.get_cpu_info ~__context ~self:me |> List.assoc "vendor" in
+		let pool_cpu_vendor = 
 			let pool = List.hd (Client.Pool.get_all rpc session_id) in
-			Client.Pool.get_other_config rpc session_id pool
+			Client.Pool.get_cpu_info rpc session_id pool |> List.assoc "vendor"
 		in
-		let mask =
-			try
-				let features = List.assoc Xapi_globs.cpuid_feature_mask_key pool_other_config in
-				Some (Cpuid.string_to_features features)
-			with _ -> None
-		in
-		let get_comparable_fields cpu_info =
-			List.assoc "vendor" cpu_info,
-			let features = List.assoc "features" cpu_info in
-			match mask with
-			| None -> features
-			| Some mask ->
-				let features = Cpuid.string_to_features features in
-				let relevant_features = Cpuid.mask_features features mask in
-				Cpuid.features_to_string relevant_features
-		in
-		let my_cpus_compare = get_comparable_fields my_cpu_info in
-		let master_cpus_compare = get_comparable_fields master_cpu_info in
-
-		let print_cpu cpu = debug "%s, %s"
-			(List.assoc "vendor" cpu) (List.assoc "features" cpu) in
 		debug "Pool pre-join CPU homogeneity check:";
-		debug "Slave CPUs:";
-		print_cpu my_cpu_info;
-		debug "Master CPUs:";
-		print_cpu master_cpu_info;
-		begin match mask with
-		| Some mask ->
-			debug "User-defined feature mask on pool: %s" (Cpuid.features_to_string mask)
-		| None -> ()
-		end;
+		debug "Slave CPUs: %s" my_cpu_vendor;
+		debug "Pool CPUs: %s" pool_cpu_vendor;
 
-		if my_cpus_compare <> master_cpus_compare then
+		if my_cpu_vendor <> pool_cpu_vendor then
 			raise (Api_errors.Server_error(Api_errors.pool_hosts_not_homogeneous,["CPUs differ"])) in
 
 	let assert_not_joining_myself () =
@@ -380,8 +343,7 @@ let pre_join_checks ~__context ~rpc ~session_id ~force =
 	assert_hosts_compatible ();
 	if (not force) then assert_hosts_homogeneous ();
 	assert_no_shared_srs_on_me ();
-	assert_no_network_bond_on_me ();
-	assert_management_interface_is_physical ();
+	assert_only_physical_pifs ();
 	assert_external_auth_matches ();
 	assert_restrictions_match ();
 	assert_homogeneous_vswitch_configuration ();
@@ -405,6 +367,12 @@ let rec create_or_get_host_on_master __context rpc session_id (host_ref, host) :
 					create_or_get_sr_on_master __context rpc session_id (my_local_cache_sr, my_local_cache_sr_rec)
 				end in
 
+			(* Look up the value on the master of the pool we are about to join *)
+			let master_ssl = Client.Host.get_ssl_legacy ~rpc ~session_id ~self:(get_master rpc session_id) in
+			(* Set value in inventory (to control initial behaviour on next xapi start)
+			 * but not in the database of the current pool (the one we're about to leave) *)
+			Xapi_inventory.update Xapi_inventory._stunnel_legacy (string_of_bool master_ssl);
+
 			debug "Creating host object on master";
 			let ref = Client.Host.create ~rpc ~session_id
 				~uuid:my_uuid
@@ -424,6 +392,7 @@ let rec create_or_get_host_on_master __context rpc session_id (host_ref, host) :
 				 * been added to the constructor. *)
 				~local_cache_sr
 				~chipset_info:host.API.host_chipset_info
+				~ssl_legacy:master_ssl
 			in
 
 			(* Copy other-config into newly created host record: *)
@@ -688,7 +657,12 @@ let update_non_vm_metadata ~__context ~rpc ~session_id =
 
 	()
 
+let assert_pooling_licensed ~__context =
+	if (not (Pool_features.is_enabled ~__context Features.Pooling))
+	then raise (Api_errors.Server_error(Api_errors.license_restriction, []))
+
 let join_common ~__context ~master_address ~master_username ~master_password ~force =
+	assert_pooling_licensed ~__context;
 	(* get hold of cluster secret - this is critical; if this fails whole pool join fails *)
 	(* Note: this is where the license restrictions are checked on the other side.. if we're trying to join
 	a host that does not support pooling then an error will be thrown at this stage *)
@@ -874,16 +848,16 @@ let eject ~__context ~host =
 		debug "Pool.eject: deleting Host record (the point of no return)";
 		(* delete me from the database - this will in turn cause PBDs and PIFs to be GCed *)
 		Db.Host.destroy ~__context ~self:host;
+		Create_misc.create_pool_cpuinfo ~__context;
 
-		debug "Pool.eject: resetting CPU features";
-		(* Clear the CPU feature masks from the Xen command line *)
-		ignore (Xen_cmdline.delete_cpuid_masks
-			["cpuid_mask_ecx"; "cpuid_mask_edx"; "cpuid_mask_ext_ecx"; "cpuid_mask_ext_edx"]);
+		(* Update pool features, in case this host had a different license to the
+		 * rest of the pool. *)
+		Pool_features.update_pool_features ~__context;
 
-		(* and destroy my control domain, since you can't do this from the API [operation not allowed] *)
+		(* and destroy my control domains, since you can't do this from the API [operation not allowed] *)
 		begin try
-			let my_control_domain = List.find (fun x->x.API.vM_is_control_domain) (List.map snd my_vms_with_records) in
-			Db.VM.destroy ~__context ~self:(Db.VM.get_by_uuid ~__context ~uuid:my_control_domain.API.vM_uuid)
+			let my_control_domains = List.filter (fun x->x.API.vM_is_control_domain) (List.map snd my_vms_with_records) in
+			List.iter (fun control_domain -> Db.VM.destroy ~__context ~self:(Db.VM.get_by_uuid ~__context ~uuid:control_domain.API.vM_uuid)) my_control_domains;
 		with _ -> () end;
 		debug "Pool.eject: setting our role to be master";
 		Pool_role.set_role Pool_role.Master;
@@ -1229,7 +1203,7 @@ let ha_compute_vm_failover_plan ~__context ~failed_hosts ~failed_vms =
   let errors = List.concat 
     (List.map 
        (fun self -> 
-	  try Helpers.vm_assert_agile ~__context ~self; [ self, [ "error_code", Api_errors.host_not_enough_free_memory ] ] (* default *) 
+	  try Agility.vm_assert_agile ~__context ~self; [ self, [ "error_code", Api_errors.host_not_enough_free_memory ] ] (* default *) 
 	  with Api_errors.Server_error(code, params) -> [ self, [ "error_code", code ]]) failed_vms) in
   let plan = List.map (fun (vm, host) -> vm, [ "host", Ref.string_of host ]) 
     (Xapi_ha_vm_failover.compute_evacuation_plan ~__context (List.length all_hosts) live_hosts vms) in
@@ -1620,11 +1594,6 @@ let disable_redo_log ~__context =
 	end;
 	info "The redo log is now disabled"
 
-let assert_is_valid_ip ip_addr =
- 	if ip_addr <> "" then
-	try let (_: Unix.inet_addr) = Unix.inet_addr_of_string ip_addr in ()
-	with _ -> raise (Api_errors.Server_error (Api_errors.invalid_ip_address_specified, [ "address" ]))
-
 let set_vswitch_controller ~__context ~address =
 	let dbg = Context.string_of_task __context in
 	match Net.Bridge.get_kind dbg () with
@@ -1633,7 +1602,7 @@ let set_vswitch_controller ~__context ~address =
 		let current_address = Db.Pool.get_vswitch_controller ~__context ~self:pool in
 		if current_address <> address then begin
 			if address <> "" then
-				assert_is_valid_ip address;
+				Helpers.assert_is_valid_ip `ipv4 "address" address;
 			Db.Pool.set_vswitch_controller ~__context ~self:pool ~value:address;
 			List.iter (fun host -> Helpers.update_vswitch_controller ~__context ~host) (Db.Host.get_all ~__context)
 		end
@@ -1703,23 +1672,17 @@ let disable_local_storage_caching ~__context ~self =
 	else ()
 
 let get_license_state ~__context ~self =
+	let edition_to_int = List.map (fun (e, _, _, i) -> e, i) (V6client.get_editions "get_license_state") in
 	let hosts = Db.Host.get_all ~__context in
-	let pool_edition = Xapi_pool_license.get_lowest_edition ~__context ~hosts in
-	(* If any hosts are free edition then the pool is free edition with no expiry
-	 * date. If all hosts are licensed then the pool has that license, and the
-	 * earliest expiry date applies to the pool. *)
-	let pool_expiry_date =
-		match pool_edition with
-		| "free" -> "never"
-		| _ -> begin
-			match Xapi_pool_license.get_earliest_expiry_date ~__context ~hosts with
-			| None -> "never"
-			| Some date -> Date.to_string date
-		end
+	let pool_edition, expiry = Xapi_pool_license.get_lowest_edition_with_expiry ~__context ~hosts ~edition_to_int in
+	let pool_expiry =
+		match expiry with
+		| None -> "never"
+		| Some date -> if date = Date.of_float License_check.never then "never" else Date.to_string date
 	in
 	[
 		"edition", pool_edition;
-		"expiry", pool_expiry_date;
+		"expiry", pool_expiry;
 	]
 
 let apply_edition ~__context ~self ~edition =
@@ -1765,17 +1728,15 @@ let assert_mac_seeds_available ~__context ~self ~seeds =
 		raise (Api_errors.Server_error
 			(Api_errors.duplicate_mac_seed, [StringSet.choose problem_mac_seeds]))
 
-let disable_ssl_legacy ~__context ~self =
+let set_ssl_legacy_on_each_host ~__context ~self ~value =
 	let f ~rpc ~session_id ~host =
-		Client.Host.set_ssl_legacy ~rpc ~session_id ~self:host ~value:false
+		Client.Host.set_ssl_legacy ~rpc ~session_id ~self:host ~value
 	in
 	Xapi_pool_helpers.call_fn_on_slaves_then_master ~__context f
 
-let enable_ssl_legacy ~__context ~self =
-	let f ~rpc ~session_id ~host =
-		Client.Host.set_ssl_legacy ~rpc ~session_id ~self:host ~value:true
-	in
-	Xapi_pool_helpers.call_fn_on_slaves_then_master ~__context f
+let disable_ssl_legacy = set_ssl_legacy_on_each_host ~value:false
+
+let enable_ssl_legacy = set_ssl_legacy_on_each_host ~value:true
 
 let has_extension ~__context ~self ~name =
 	try

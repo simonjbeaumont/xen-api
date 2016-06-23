@@ -20,13 +20,17 @@ let base_suite =
 	"base_suite" >:::
 		[
 			Test_basic.test;
+			Test_agility.test;
 			Test_helpers.test;
+			Test_datamodel_utils.test;
 			Test_db_lowlevel.test;
+			Test_daemon_manager.test;
 			Test_http.test;
 			Test_pool_db_backup.test;
 			Test_xapi_db_upgrade.test;
 			Test_ca91480.test;
 			Test_vdi_allowed_operations.test;
+			Test_ha_vm_failover.test;
 			Test_map_check.test;
 			Test_pool_apply_edition.test;
 			Test_pool_license.test;
@@ -39,10 +43,14 @@ let base_suite =
 			Test_pgpu_helpers.test;
 			Test_storage_migrate_state.test;
 			Test_vm_helpers.test;
+			Test_vm_migrate.test;
 			Test_xenopsd_metadata.test;
 			Test_workload_balancing.test;
+			Test_cpuid_helpers.test;
+			Test_pool_cpuinfo.test;
 			(* Test_ca121350.test; *)
-			Test_pbd.test
+			Test_daily_license_check.test;
+			Test_dbsync_master.test;
 		]
 
 let handlers = [

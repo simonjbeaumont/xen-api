@@ -32,10 +32,10 @@ install:
 	$(IPROG) fence $(DESTDIR)$(LIBEXECDIR)
 	$(IPROG) xha-lc $(DESTDIR)$(LIBEXECDIR)
 	$(IPROG) xapi-health-check $(DESTDIR)$(LIBEXECDIR)
-	$(IPROG) license-check.py $(DESTDIR)$(LIBEXECDIR)
 	$(IPROG) mail-alarm $(DESTDIR)$(LIBEXECDIR)
 	$(IDATA) audit-logrotate $(DESTDIR)/etc/logrotate.d/audit
-	$(IDATA) xapi-logrotate $(DESTDIR)/etc/logrotate.d/xapi
+	$(IDATA) xapi-logrotate.conf $(DESTDIR)$(ETCDIR)
+	$(IPROG) xapi-logrotate.sh $(DESTDIR)$(LIBEXECDIR)
 	$(IPROG) xapi-wait-init-complete $(DESTDIR)$(BINDIR)
 	$(IPROG) xapi-autostart-vms $(DESTDIR)$(BINDIR)
 	$(IPROG) udhcpd.skel $(DESTDIR)$(ETCDIR)/udhcpd.skel
@@ -51,9 +51,7 @@ install:
 	$(IPROG) init.d-genptoken $(DESTDIR)/etc/rc.d/init.d/genptoken
 	$(IPROG) init.d-save-boot-info $(DESTDIR)/etc/rc.d/init.d/save-boot-info
 	$(IPROG) init.d-attach-static-vdis $(DESTDIR)/etc/rc.d/init.d/attach-static-vdis
-	$(IPROG) init.d-v6d $(DESTDIR)/etc/rc.d/init.d/v6d
 	$(IPROG) cdrommon@.service $(DESTDIR)/usr/lib/systemd/system/cdrommon@.service
-	$(IDATA) v6d-logrotate $(DESTDIR)/etc/logrotate.d/v6d
 	mkdir -p $(DESTDIR)$(ETCDIR)/master.d
 	$(IPROG) on-master-start $(DESTDIR)$(ETCDIR)/master.d/01-example
 	$(IPROG) mpathalert-daemon $(DESTDIR)$(ETCDIR)/master.d/03-mpathalert-daemon
@@ -122,7 +120,9 @@ install:
 	$(IPROG) hfx_filename $(DESTDIR)$(BINDIR)
 	$(IPROG) pv2hvm $(DESTDIR)$(BINDIR)
 	mkdir -p $(DESTDIR)/etc/cron.daily
-	$(IDATA) license-check $(DESTDIR)/etc/cron.daily/
+	$(IPROG) license-check $(DESTDIR)/etc/cron.daily/
+	mkdir -p $(DESTDIR)/etc/cron.d
+	$(IDATA) xapi-logrotate.cron $(DESTDIR)/etc/cron.d/xapi-logrotate.cron
 	mkdir -p $(DESTDIR)/opt/xensource/gpg
 	$(IDATA) gpg/secring.gpg $(DESTDIR)/opt/xensource/gpg/
 	$(IDATA) gpg/pubring.gpg $(DESTDIR)/opt/xensource/gpg/

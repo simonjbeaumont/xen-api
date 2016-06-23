@@ -33,7 +33,8 @@ let check_operation_error ~__context ?(sr_records=[]) ?(pbd_records=[]) ?(vbd_re
 
 	(* Policy:
 	   1. any current_operation besides copy implies exclusivity; fail everything
-	      else
+	      else; except vdi mirroring is in current operations and destroy is performed
+	      as part of vdi_pool_migrate.
 	   2. if a copy is ongoing, don't fail with other_operation_in_progress, as
 	      blocked operations could then get stuck behind a long-running copy.
 	      Instead, rely on the blocked_by_attach check further down to decide
@@ -44,13 +45,16 @@ let check_operation_error ~__context ?(sr_records=[]) ?(pbd_records=[]) ?(vbd_re
 	      has a current_operation itself
 	   5. HA prevents you from deleting statefiles or metadata volumes
 	   *)
-	if List.exists (fun (_, op) -> op <> `copy) current_ops
+	(* Don't fail with other_operation_in_progress if VDI mirroring is in progress
+	 * and destroy is called as part of VDI mirroring *)
+	let is_vdi_mirroring_in_progress = (List.exists (fun (_, op) -> op = `mirror) current_ops) && (op = `destroy) in
+	if (List.exists (fun (_, op) -> op <> `copy) current_ops) && not is_vdi_mirroring_in_progress
 	then Some(Api_errors.other_operation_in_progress,["VDI"; _ref])
 	else
 		(* check to see whether it's a local cd drive *)
 		let sr = record.Db_actions.vDI_SR in
 		let sr_type = Db.SR.get_type ~__context ~self:sr in
-		let is_tools_sr = Helpers.is_tools_sr ~__context ~sr in
+		let is_tools_sr = Db.SR.get_is_tools_sr ~__context ~self:sr in
 
 		(* Check to see if any PBDs are attached *)
 		let open Db_filter_types in
@@ -96,7 +100,7 @@ let check_operation_error ~__context ?(sr_records=[]) ?(pbd_records=[]) ?(vbd_re
 			   VDI.clone (if the VM is suspended we have to have the 'allow_clone_suspended_vm'' flag)
 			   VDI.snapshot; VDI.resize_online; 'blocked' (CP-831) *)
 			let operation_can_be_performed_live = match op with
-			| `snapshot | `resize_online | `blocked | `clone -> true
+			| `snapshot | `resize_online | `blocked | `clone | `mirror -> true
 			| _ -> false in
 
 			let operation_can_be_performed_with_ro_attach =
@@ -186,6 +190,10 @@ let check_operation_error ~__context ?(sr_records=[]) ?(pbd_records=[]) ?(vbd_re
 					else None
 				| `clone ->
 					if not Smint.(has_capability Vdi_clone sm_features)
+					then Some (Api_errors.sr_operation_not_supported, [Ref.string_of sr])
+					else None
+				| `mirror ->
+					if not Smint.(has_capability Vdi_mirror sm_features)
 					then Some (Api_errors.sr_operation_not_supported, [Ref.string_of sr])
 					else None
 				| _ -> None
@@ -345,7 +353,8 @@ let introduce_dbonly  ~__context ~uuid ~name_label ~name_description ~sR ~_type 
     ~xenstore_data ~sm_config
     ~other_config ~storage_lock:false ~location ~managed ~missing:false ~parent:Ref.null ~tags:[]
     ~on_boot:`persist ~allow_caching:false
-    ~metadata_of_pool ~metadata_latest:false;
+    ~metadata_of_pool ~metadata_latest:false
+    ~is_tools_iso:false;
   ref
 
 let internal_db_introduce ~__context ~uuid ~name_label ~name_description ~sR ~_type ~sharable ~read_only ~other_config ~location ~xenstore_data ~sm_config ~managed ~virtual_size ~physical_utilisation ~metadata_of_pool ~is_a_snapshot ~snapshot_time ~snapshot_of =
@@ -749,12 +758,12 @@ let open_database ~__context ~self =
 		raise (Api_errors.Server_error(Api_errors.vdi_incompatible_type,
 			[Ref.string_of self; Record_util.vdi_type_to_string vdi_type]));
 	try
-		let db_ref = Xapi_vdi_helpers.database_ref_of_vdi ~__context ~vdi:self in
+		let db_ref =
+			Some (Xapi_vdi_helpers.database_ref_of_vdi ~__context ~vdi:self) in
 		(* Create a new session to query the database, and associate it with the db ref *)
 		debug "%s" "Creating readonly session";
-		let read_only_session = Xapi_session.create_readonly_session ~__context ~uname:"disaster-recovery" in
-		Db_backend.register_session_with_database read_only_session db_ref;
-		read_only_session
+		Xapi_session.create_readonly_session ~__context
+			~uname:"disaster-recovery" ~db_ref
 	with e ->
 		let error = Printexc.to_string e in
 		let reason = match e with

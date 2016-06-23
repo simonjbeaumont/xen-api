@@ -50,6 +50,10 @@ let tampa = Datamodel.tampa_release_schema_major_vsn, Datamodel.tampa_release_sc
 let clearwater = Datamodel.clearwater_release_schema_major_vsn, Datamodel.clearwater_release_schema_minor_vsn
 let creedence = Datamodel.creedence_release_schema_major_vsn, Datamodel.creedence_release_schema_minor_vsn
 let cream = Datamodel.cream_release_schema_major_vsn, Datamodel.cream_release_schema_minor_vsn
+let dundee = Datamodel.dundee_release_schema_major_vsn, Datamodel.dundee_release_schema_minor_vsn
+
+(* This is to support upgrade from Dundee tech-preview versions *)
+let vsn_with_meaningful_has_vendor_device = Datamodel.meaningful_vm_has_vendor_device_schema_major_vsn, Datamodel.meaningful_vm_has_vendor_device_schema_minor_vsn
 
 let upgrade_alert_priority = {
 	description = "Upgrade alert priority";
@@ -304,21 +308,6 @@ let upgrade_ha_restart_priority = {
 		List.iter update_vm all_vms
 }
 
-let upgrade_cpu_flags = {
-	description = "Upgrading last_boot_CPU flags for all running VMs";
-	version = (fun x -> x <= cowley);
-	fn = fun ~__context ->
-		let should_update_vm vm =
-			let power_state = Db.VM.get_power_state ~__context ~self:vm in
-			List.mem power_state [`Running; `Suspended]
-		in
-		let all_vms = Db.VM.get_all ~__context in
-		let vms_to_update = List.filter should_update_vm all_vms in
-		let master = Helpers.get_master ~__context in
-		List.iter (fun vm -> Cpuid_helpers.populate_cpu_flags ~__context ~vm ~host:master)
-			vms_to_update
-}
-
 (* To deal with the removal of the "Auto-start on server boot" feature in Boston, *)
 (* all VMs with the other_config flag "auto_poweron" set to true will have *)
 (* ha_restart_priority set to "best-effort". *)
@@ -387,6 +376,26 @@ let add_default_pif_properties = {
 		List.iter
 			(fun self -> Xapi_pif.set_default_properties ~__context ~self)
 			(Db.PIF.get_all ~__context)
+}
+
+let default_has_vendor_device_false = {
+	description = "Defaulting has_vendor_device false";
+	version = (fun x -> x < vsn_with_meaningful_has_vendor_device);
+	fn = fun ~__context ->
+		List.iter
+			(fun self -> Db.VM.set_has_vendor_device ~__context ~self ~value:false)
+			(Db.VM.get_all ~__context)
+}
+
+let default_pv_drivers_detected_false = {
+	description = "Defaulting PV_drivers_detected false";
+	version = (fun x -> x < dundee);
+	fn = fun ~__context ->
+		List.iter
+			(fun self ->
+				let gm = Db.VM.get_guest_metrics ~__context ~self in
+				Db.VM_guest_metrics.set_PV_drivers_detected ~__context ~self:gm ~value:false)
+			(Db.VM.get_all ~__context)
 }
 
 let populate_pgpu_vgpu_types = {
@@ -493,13 +502,14 @@ let rules = [
 	upgrade_guest_installer_network;
 	upgrade_vdi_types;
 	upgrade_ha_restart_priority;
-	upgrade_cpu_flags;
 	upgrade_auto_poweron;
 	upgrade_pif_metrics;
 	remove_vmpp;
 	populate_pgpu_vgpu_types;
 	set_vgpu_types;
 	add_default_pif_properties;
+	default_has_vendor_device_false;
+	default_pv_drivers_detected_false;
 	remove_restricted_pbd_keys;
 	upgrade_recommendations_for_gpu_passthru;
 ]

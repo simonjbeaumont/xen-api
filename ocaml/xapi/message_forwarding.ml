@@ -544,6 +544,8 @@ module Forward = functor(Local: Custom_actions.CUSTOM_ACTIONS) -> struct
 
 		let designate_new_master ~__context ~host =
 			info "Pool.designate_new_master: pool = '%s'; host = '%s'" (current_pool_uuid ~__context) (host_uuid ~__context host);
+			(* Sync the RRDs from localhost to new master *)
+			Xapi_sync.sync_host __context host;
 			let local_fn = Local.Pool.designate_new_master ~host in
 			do_op_on ~local_fn ~__context ~host (fun session_id rpc -> Client.Pool.designate_new_master rpc session_id host)
 
@@ -654,6 +656,47 @@ module Forward = functor(Local: Custom_actions.CUSTOM_ACTIONS) -> struct
 	module VM = struct
 		(* Defined in Xapi_vm_helpers so it can be used from elsewhere without circular dependency. *)
 		let with_vm_operation = Xapi_vm_helpers.with_vm_operation
+
+		(* Nb, we're not using the snapshots returned in 'Event.from' here because
+		 * the tasks might get deleted. The standard mechanism for dealing with
+		 * deleted events assumes you have a full database replica locally, and
+		 * deletions are handled by checking your valid_ref_counts table against
+		 * your local database. In this case, we're only interested in a subset of
+		 * events, so this mechanism doesn't work. There will only be a few outstanding
+		 * tasks anyway, so we're safe to just iterate through the references when an
+		 * event happens - ie, we use the event API simply to wake us up when something
+		 * interesting has happened. *)
+
+		let wait_for_tasks ~__context ~tasks =
+			let our_task = Context.get_task_id __context in
+			let classes = List.map (fun x -> Printf.sprintf "task/%s" (Ref.string_of x)) (our_task::tasks) in
+
+			let rec process token =
+				TaskHelper.exn_if_cancelling ~__context; (* First check if _we_ have been cancelled *)
+				let statuses = List.filter_map (fun task -> try Some (Db.Task.get_status ~__context ~self:task) with _ -> None) tasks in
+				let unfinished = List.exists (fun state -> state = `pending) statuses in
+				if unfinished
+				then begin
+					let from = Helpers.call_api_functions ~__context
+					(fun rpc session_id -> Client.Event.from ~rpc ~session_id ~classes ~token ~timeout:30.0) in
+					debug "Using events to wait for tasks: %s" (String.concat "," classes);
+					let from = Event_types.event_from_of_rpc from in
+					process from.Event_types.token
+				end else
+					()
+			in
+			process ""
+
+		let cancel ~__context ~vm ~ops =
+			let cancelled = List.filter_map (fun (task,op) ->
+				if List.mem op ops then begin
+					info "Cancelling VM.%s for VM.hard_shutdown/reboot" (Record_util.vm_operation_to_string op);
+					Helpers.call_api_functions ~__context
+						(fun rpc session_id -> try Client.Task.cancel ~rpc ~session_id ~task:(Ref.of_string task) with _ -> ());
+					Some (Ref.of_string task)
+				end else None
+			) (Db.VM.get_current_operations ~__context ~self:vm) in
+			wait_for_tasks ~__context ~tasks:cancelled
 
 		let unmark_vbds ~__context ~vbds ~doc ~op =
 			let task_id = Ref.string_of (Context.get_task_id __context) in
@@ -810,6 +853,16 @@ module Forward = functor(Local: Custom_actions.CUSTOM_ACTIONS) -> struct
 		   choose_host_for_vm.
 		*)
 
+		(* Clear scheduled_to_be_resident_on for a VM and all its vGPUs. *)
+		let clear_scheduled_to_be_resident_on ~__context ~vm =
+			Db.VM.set_scheduled_to_be_resident_on ~__context ~self:vm ~value:Ref.null;
+			List.iter
+				(fun vgpu ->
+					Db.VGPU.set_scheduled_to_be_resident_on ~__context
+						~self:vgpu
+						~value:Ref.null)
+				(Db.VM.get_VGPUs ~__context ~self:vm)
+
 		(* Used by VM.start and VM.resume to choose a host with enough resource and to
 		   'allocate_vm_to_host' (ie set the 'scheduled_to_be_resident_on' field) *)
 		let forward_to_suitable_host ~local_fn ~__context ~vm ~snapshot ?host_op op =
@@ -830,8 +883,8 @@ module Forward = functor(Local: Custom_actions.CUSTOM_ACTIONS) -> struct
 						(fun () ->
 							finally_clear_host_operation ~__context ~host:suitable_host ?host_op ();
 							(* In certain cases, VM might have been destroyed as a consequence of operation *)
-							if Db.is_valid_ref __context vm then
-								Db.VM.set_scheduled_to_be_resident_on ~__context ~self:vm ~value:Ref.null))
+							if Db.is_valid_ref __context vm
+							then clear_scheduled_to_be_resident_on ~__context ~vm))
 
 		(* Used by VM.start_on, VM.resume_on, VM.migrate to verify a host has enough resource and to
 		   'allocate_vm_to_host' (ie set the 'scheduled_to_be_resident_on' field) *)
@@ -849,7 +902,7 @@ module Forward = functor(Local: Custom_actions.CUSTOM_ACTIONS) -> struct
 					Helpers.with_global_lock
 						(fun () ->
 							finally_clear_host_operation ~__context ~host ?host_op ();
-							Db.VM.set_scheduled_to_be_resident_on ~__context ~self:vm ~value:Ref.null))
+							clear_scheduled_to_be_resident_on ~__context ~vm))
 
 		(**
 		   Used by VM.set_memory_dynamic_range to reserve enough memory for
@@ -922,9 +975,10 @@ module Forward = functor(Local: Custom_actions.CUSTOM_ACTIONS) -> struct
 		(* -------------------------------------------------------------------------- *)
 
 		(* don't forward create. this just makes a db record *)
-		let create ~__context ~name_label ~name_description ~user_version ~is_a_template ~affinity ~memory_target ~memory_static_max ~memory_dynamic_max ~memory_dynamic_min ~memory_static_min ~vCPUs_params ~vCPUs_max ~vCPUs_at_startup ~actions_after_shutdown ~actions_after_reboot ~actions_after_crash ~pV_bootloader ~pV_kernel ~pV_ramdisk ~pV_args ~pV_bootloader_args ~pV_legacy_args ~hVM_boot_policy ~hVM_boot_params ~hVM_shadow_multiplier ~platform ~pCI_bus ~other_config ~recommendations ~xenstore_data  ~ha_always_run ~ha_restart_priority ~tags ~blocked_operations ~protection_policy ~is_snapshot_from_vmpp ~appliance ~start_delay ~shutdown_delay ~order ~suspend_SR ~version ~generation_id =
+		let create ~__context ~name_label ~name_description =
 			info "VM.create: name_label = '%s' name_description = '%s'" name_label name_description;
-			Local.VM.create ~__context ~name_label ~name_description ~user_version ~is_a_template ~affinity ~memory_target ~memory_static_max ~memory_dynamic_max ~memory_dynamic_min ~memory_static_min ~vCPUs_params ~vCPUs_max ~vCPUs_at_startup ~actions_after_shutdown ~actions_after_reboot ~actions_after_crash ~pV_bootloader ~pV_kernel ~pV_ramdisk ~pV_args ~pV_bootloader_args ~pV_legacy_args ~hVM_boot_policy ~hVM_boot_params ~hVM_shadow_multiplier ~platform ~pCI_bus ~other_config  ~recommendations ~xenstore_data  ~ha_always_run ~ha_restart_priority ~tags ~blocked_operations ~protection_policy ~is_snapshot_from_vmpp ~appliance ~start_delay ~shutdown_delay ~order ~suspend_SR ~version ~generation_id
+			(* Partial application: return a function which will take the dozens of remaining params *)
+			Local.VM.create ~__context ~name_label ~name_description
 
 		(* don't forward destroy. this just deletes db record *)
 		let destroy ~__context ~self =
@@ -1115,8 +1169,6 @@ module Forward = functor(Local: Custom_actions.CUSTOM_ACTIONS) -> struct
 										let (), host = forward_to_suitable_host ~local_fn ~__context ~vm ~snapshot ~host_op:`vm_start
 											(fun session_id rpc ->
 												Client.VM.start rpc session_id vm start_paused force) in
-										Cpuid_helpers.populate_cpu_flags ~__context ~vm ~host;
-										Xapi_vm_helpers.start_delay ~__context ~vm;
 										host
 									))) in
 			update_vbd_operations ~__context ~vm;
@@ -1174,7 +1226,6 @@ module Forward = functor(Local: Custom_actions.CUSTOM_ACTIONS) -> struct
 													Client.VM.start
 														rpc session_id vm start_paused force)
 										);
-									Cpuid_helpers.populate_cpu_flags ~__context ~vm ~host;
 									Xapi_vm_helpers.start_delay ~__context ~vm;
 								)));
 			update_vbd_operations ~__context ~vm;
@@ -1225,13 +1276,9 @@ module Forward = functor(Local: Custom_actions.CUSTOM_ACTIONS) -> struct
 				(fun () ->
 					forward_vm_op ~local_fn ~__context ~vm (fun session_id rpc -> Client.VM.call_plugin rpc session_id vm plugin fn args))
 
-		let set_auto_update_drivers ~__context ~self ~value =
-			info "VM.set_auto_update_drivers: VM = '%s' to %b" (vm_uuid ~__context self) value;
-			Local.VM.set_auto_update_drivers ~__context ~self ~value
-			
-		let assert_can_set_auto_update_drivers ~__context ~self ~value =
-			info "VM.assert_can_set_auto_update_drivers: VM = '%s' to %b " (vm_uuid ~__context self) value;
-			Local.VM.assert_can_set_auto_update_drivers ~__context ~self ~value
+		let set_has_vendor_device ~__context ~self ~value =
+			info "VM.set_has_vendor_device: VM = '%s' to %b" (vm_uuid ~__context self) value;
+			Local.VM.set_has_vendor_device ~__context ~self ~value
 
 		let set_xenstore_data ~__context ~self ~value =
 			info "VM.set_xenstore_data: VM = '%s'" (vm_uuid ~__context self);
@@ -1246,8 +1293,7 @@ module Forward = functor(Local: Custom_actions.CUSTOM_ACTIONS) -> struct
 			let local_fn = Local.VM.clean_shutdown ~vm in
 			with_vm_operation ~__context ~self:vm ~doc:"VM.clean_shutdown" ~op:`clean_shutdown
 				(fun () ->
-					forward_vm_op ~local_fn ~__context ~vm (fun session_id rpc -> Client.VM.clean_shutdown rpc session_id vm);
-					Xapi_vm_helpers.shutdown_delay ~__context ~vm
+					forward_vm_op ~local_fn ~__context ~vm (fun session_id rpc -> Client.VM.clean_shutdown rpc session_id vm)
 				);
 			let uuid = Db.VM.get_uuid ~__context ~self:vm in
 			let message_body =
@@ -1275,8 +1321,7 @@ module Forward = functor(Local: Custom_actions.CUSTOM_ACTIONS) -> struct
 								do_op_on ~__context ~local_fn:(Local.VM.hard_shutdown ~vm) ~host:suitable_host (fun session_id rpc -> Client.VM.hard_shutdown rpc session_id vm)
 							end
 						else
-							forward_vm_op ~local_fn ~__context ~vm (fun session_id rpc -> Client.VM.shutdown rpc session_id vm);
-					Xapi_vm_helpers.shutdown_delay ~__context ~vm
+							forward_vm_op ~local_fn ~__context ~vm (fun session_id rpc -> Client.VM.shutdown rpc session_id vm)
 				);
 			update_vbd_operations ~__context ~vm;
 			update_vif_operations ~__context ~vm;
@@ -1323,22 +1368,10 @@ module Forward = functor(Local: Custom_actions.CUSTOM_ACTIONS) -> struct
 		let hard_shutdown ~__context ~vm =
 			info "VM.hard_shutdown: VM = '%s'" (vm_uuid ~__context vm);
 			let local_fn = Local.VM.hard_shutdown ~vm in
+			let host = Db.VM.get_resident_on ~__context ~self:vm in
 			with_vm_operation ~__context ~self:vm ~doc:"VM.hard_shutdown" ~op:`hard_shutdown
 				(fun () ->
-					(* Before doing the shutdown we might need to cancel existing operations *)
-					List.iter (fun (task,op) ->
-						if List.mem op [ `clean_shutdown; `clean_reboot; `hard_reboot; `call_plugin ] then (
-							(* At the end of the cancellation, if the VM is on a slave then the task doing
-							 * the cancellation will be marked complete (successful).  This would be premature
-							 * for the current task since it still has work to do: first possibly some more
-							 * cancellations, then definitely the VM hard_shutdown. Therefore we must spawn
-							 * a new task to do the cancellation. (But no need to go via API call.) *)
-							Server_helpers.exec_with_subtask ~__context
-								("Cancelling VM." ^ (Record_util.vm_operation_to_string op) ^ " for VM.hard_shutdown")
-								(fun ~__context -> try Task.cancel ~__context ~task:(Ref.of_string task) with _ -> ())
-						)
-					) (Db.VM.get_current_operations ~__context ~self:vm);
-
+					cancel ~__context ~vm ~ops:[ `clean_shutdown; `clean_reboot; `hard_reboot; `pool_migrate; `call_plugin; `suspend ];
 					(* If VM is actually suspended and we ask to hard_shutdown, we need to
 					   forward to any host that can see the VDIs *)
 					let policy =
@@ -1354,9 +1387,9 @@ module Forward = functor(Local: Custom_actions.CUSTOM_ACTIONS) -> struct
 							end
 						else
 							(* if we're nt suspended then just forward to host that has vm running on it: *)
-							forward_vm_op ~vm in
-					policy ~local_fn ~__context (fun session_id rpc -> Client.VM.hard_shutdown rpc session_id vm);
-					Xapi_vm_helpers.shutdown_delay ~__context ~vm
+							do_op_on ~host:host
+					in
+					policy ~local_fn ~__context (fun session_id rpc -> Client.VM.hard_shutdown rpc session_id vm)
 				);
 			let uuid = Db.VM.get_uuid ~__context ~self:vm in
 			let message_body =
@@ -1372,24 +1405,17 @@ module Forward = functor(Local: Custom_actions.CUSTOM_ACTIONS) -> struct
 		let hard_reboot ~__context ~vm =
 			info "VM.hard_reboot: VM = '%s'" (vm_uuid ~__context vm);
 			let local_fn = Local.VM.hard_reboot ~vm in
+			let host = Db.VM.get_resident_on ~__context ~self:vm in
 			with_vm_operation ~__context ~self:vm ~doc:"VM.hard_reboot" ~op:`hard_reboot
 				(fun () ->
-					(* Before doing the reboot we might need to cancel existing operations *)
-					List.iter (fun (task,op) ->
-						if List.mem op [ `clean_shutdown; `clean_reboot; `call_plugin ] then (
-							(* We must do the cancelling in a subtask: see hard_shutdown comment for reason. *)
-							Server_helpers.exec_with_subtask ~__context
-								("Cancelling VM." ^ (Record_util.vm_operation_to_string op) ^ " for VM.hard_reboot")
-								(fun ~__context -> try Task.cancel ~__context ~task:(Ref.of_string task) with _ -> ())
-						)
-					) (Db.VM.get_current_operations ~__context ~self:vm);
+					cancel ~__context ~vm ~ops:[ `clean_shutdown; `clean_reboot; `pool_migrate; `call_plugin; `suspend ];
 					with_vbds_marked ~__context ~vm ~doc:"VM.hard_reboot" ~op:`attach
 						(fun vbds ->
 							with_vifs_marked ~__context ~vm ~doc:"VM.hard_reboot" ~op:`attach
 								(fun vifs ->
 									(* CA-31903: we don't need to reserve memory for reboot because the memory settings can't
 									   change across reboot. *)
-									forward_vm_op ~local_fn ~__context ~vm
+									do_op_on ~host:host ~local_fn ~__context
 										(fun session_id rpc -> Client.VM.hard_reboot rpc session_id vm))));
 			let uuid = Db.VM.get_uuid ~__context ~self:vm in
 			let message_body =
@@ -1514,7 +1540,6 @@ module Forward = functor(Local: Custom_actions.CUSTOM_ACTIONS) -> struct
 								let snapshot = Helpers.get_boot_record ~__context ~self:vm in
 								let (), host = forward_to_suitable_host ~local_fn ~__context ~vm ~snapshot ~host_op:`vm_resume
 									(fun session_id rpc -> Client.VM.resume rpc session_id vm start_paused force) in
-								Cpuid_helpers.populate_cpu_flags ~__context ~vm ~host;
 								host
 							);
 					)
@@ -1548,7 +1573,6 @@ module Forward = functor(Local: Custom_actions.CUSTOM_ACTIONS) -> struct
 								(fun () ->
 									do_op_on ~local_fn ~__context ~host
 										(fun session_id rpc -> Client.VM.resume_on rpc session_id vm host start_paused force));
-							Cpuid_helpers.populate_cpu_flags ~__context ~vm ~host;
 						);
 				);
 			update_vbd_operations ~__context ~vm;
@@ -1592,7 +1616,7 @@ module Forward = functor(Local: Custom_actions.CUSTOM_ACTIONS) -> struct
 			let force = try bool_of_string (List.assoc "force" options) with _ -> false in
 			if not force then Cpuid_helpers.assert_vm_is_compatible ~__context ~vm ~host ();
 
-			with_vm_operation ~__context ~self:vm ~doc:"VM.pool_migrate" ~op:`pool_migrate
+			with_vm_operation ~__context ~self:vm ~doc:"VM.pool_migrate" ~op:`pool_migrate ~strict:(not force)
 				(fun () ->
 					(* Make sure the target has enough memory to receive the VM *)
 					let snapshot = Helpers.get_boot_record ~__context ~self:vm in
@@ -1611,7 +1635,8 @@ module Forward = functor(Local: Custom_actions.CUSTOM_ACTIONS) -> struct
 							forward_vm_op ~local_fn ~__context ~vm
 								(fun session_id rpc -> Client.VM.pool_migrate rpc session_id vm host options)));
 			update_vbd_operations ~__context ~vm;
-			update_vif_operations ~__context ~vm
+			update_vif_operations ~__context ~vm;
+			Cpuid_helpers.update_cpu_flags ~__context ~vm ~host
 
 		let migrate_send ~__context ~vm ~dest ~live ~vdi_map ~vif_map ~options =
 			info "VM.migrate_send: VM = '%s'" (vm_uuid ~__context vm);
@@ -2210,13 +2235,15 @@ module Forward = functor(Local: Custom_actions.CUSTOM_ACTIONS) -> struct
 			let local_fn = Local.Host.get_log ~host in
 			do_op_on ~local_fn ~__context ~host (fun session_id rpc -> Client.Host.get_log rpc session_id host)
 
-		(* The message is already marked as Removed, it should be safe to remove the dispatching logic here 
- 
-		let license_apply ~__context ~host ~contents =
-			info "Host.license_apply: host = '%s'" (host_uuid ~__context host);
-			let local_fn = Local.Host.license_apply ~host ~contents in
-			do_op_on ~local_fn ~__context ~host (fun session_id rpc -> Client.Host.license_apply rpc session_id host contents)
-		*)
+		let license_add ~__context ~host ~contents =
+			info "Host.license_add: host = '%s'" (host_uuid ~__context host);
+			let local_fn = Local.Host.license_add ~host ~contents in
+			do_op_on ~local_fn ~__context ~host (fun session_id rpc -> Client.Host.license_add rpc session_id host contents)
+
+		let license_remove ~__context ~host =
+			info "Host.license_remove: host = '%s'" (host_uuid ~__context host);
+			let local_fn = Local.Host.license_remove ~host in
+			do_op_on ~local_fn ~__context ~host (fun session_id rpc -> Client.Host.license_remove rpc session_id host)
 
 		let assert_can_evacuate ~__context ~host =
 			info "Host.assert_can_evacuate: host = '%s'" (host_uuid ~__context host);
@@ -2381,6 +2408,9 @@ module Forward = functor(Local: Custom_actions.CUSTOM_ACTIONS) -> struct
 
 		let enable_external_auth ~__context ~host ~config ~service_name ~auth_type =
 			info "Host.enable_external_auth: host = '%s'; service_name = '%s'; auth_type = '%s'" (host_uuid ~__context host) service_name auth_type;
+			(* First assert that the AD feature is enabled if AD is requested *)
+			if auth_type = Extauth.auth_type_AD_Likewise then
+				Pool_features.assert_enabled ~__context ~f:Features.AD;
 			let local_fn = Local.Host.enable_external_auth ~host ~config ~service_name ~auth_type in
 			do_op_on ~local_fn ~__context ~host
 				(fun session_id rpc -> Client.Host.enable_external_auth rpc session_id host config service_name auth_type)
@@ -2457,16 +2487,6 @@ module Forward = functor(Local: Custom_actions.CUSTOM_ACTIONS) -> struct
 			info "Host.refresh_pack_info: host = '%s'" (host_uuid ~__context host);
 			let local_fn = Local.Host.refresh_pack_info ~host in
 			do_op_on ~local_fn ~__context ~host (fun session_id rpc -> Client.Host.refresh_pack_info rpc session_id host)
-
-		let set_cpu_features ~__context ~host ~features =
-			info "Host.set_cpu_features: host = '%s'; features = '%s'" (host_uuid ~__context host) features;
-			let local_fn = Local.Host.set_cpu_features ~host ~features in
-			do_op_on ~local_fn ~__context ~host (fun session_id rpc -> Client.Host.set_cpu_features rpc session_id host features)
-
-		let reset_cpu_features ~__context ~host =
-			info "Host.reset_cpu_features: host = '%s'" (host_uuid ~__context host);
-			let local_fn = Local.Host.reset_cpu_features ~host in
-			do_op_on ~local_fn ~__context ~host (fun session_id rpc -> Client.Host.reset_cpu_features rpc session_id host)
 
 		let reset_networking ~__context ~host =
 			info "Host.reset_networking: host = '%s'" (host_uuid ~__context host);
@@ -2753,6 +2773,21 @@ module Forward = functor(Local: Custom_actions.CUSTOM_ACTIONS) -> struct
 			let remote_fn = (fun session_id rpc -> Client.VIF.remove_ipv6_allowed rpc session_id self value) in
 			forward_vif_op ~local_fn ~__context ~self remote_fn
 
+		let configure_ipv4 ~__context ~self ~mode ~address ~gateway =
+			info "VIF.configure_ipv4: VIF = '%s'; mode = '%s'; address = '%s'; gateway = '%s'"
+				(vif_uuid ~__context self)
+				(Record_util.vif_ipv4_configuration_mode_to_string mode) address gateway;
+			let local_fn = Local.VIF.configure_ipv4 ~self ~mode ~address ~gateway in
+			let remote_fn = (fun session_id rpc -> Client.VIF.configure_ipv4 rpc session_id self mode address gateway) in
+			forward_vif_op ~local_fn ~__context ~self remote_fn
+
+		let configure_ipv6 ~__context ~self ~mode ~address ~gateway =
+			info "VIF.configure_ipv6: VIF = '%s'; mode = '%s'; address = '%s'; gateway = '%s'"
+				(vif_uuid ~__context self)
+				(Record_util.vif_ipv6_configuration_mode_to_string mode) address gateway;
+			let local_fn = Local.VIF.configure_ipv6 ~self ~mode ~address ~gateway in
+			let remote_fn = (fun session_id rpc -> Client.VIF.configure_ipv6 rpc session_id self mode address gateway) in
+			forward_vif_op ~local_fn ~__context ~self remote_fn
 	end
 
 	module VIF_metrics = struct
@@ -3399,8 +3434,10 @@ module Forward = functor(Local: Custom_actions.CUSTOM_ACTIONS) -> struct
 							(snapshot, host) in
 					VM.reserve_memory_for_vm ~__context ~vm:vm ~host ~snapshot ~host_op:`vm_migrate
 						(fun () ->
-							do_op_on ~local_fn ~__context ~host
-								(fun session_id rpc -> Client.VDI.pool_migrate ~rpc ~session_id ~vdi ~sr ~options)))
+							with_sr_andor_vdi ~__context ~vdi:(vdi, `mirror) ~doc:"VDI.mirror"
+								(fun () ->
+									do_op_on ~local_fn ~__context ~host
+										(fun session_id rpc -> Client.VDI.pool_migrate ~rpc ~session_id ~vdi ~sr ~options))))
 
 		let resize ~__context ~vdi ~size =
 			info "VDI.resize: VDI = '%s'; size = %Ld" (vdi_uuid ~__context vdi) size;

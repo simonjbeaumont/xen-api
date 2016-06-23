@@ -106,6 +106,7 @@ let vdi_operation_to_string = function
   | `destroy -> "destroy"
   | `force_unlock -> "force_unlock"
   | `snapshot -> "snapshot"
+  | `mirror -> "mirror"
   | `forget -> "forget"
   | `update -> "update"
   | `generate_config -> "generate_config"
@@ -124,6 +125,7 @@ let sr_operation_to_string = function
   | `vdi_resize -> "VDI.resize"
   | `vdi_clone -> "VDI.clone"
   | `vdi_snapshot -> "VDI.snapshot"
+  | `vdi_mirror -> "VDI.mirror"
   | `pbd_create -> "PBD.create"
   | `pbd_destroy -> "PBD.destroy"
 
@@ -387,6 +389,16 @@ let ip_configuration_mode_of_string m =
   | "static" -> `Static
   | s        -> raise (Record_failure ("Expected 'dhcp','none' or 'static', got "^s))
 
+let vif_ipv4_configuration_mode_to_string = function
+  | `None -> "None"
+  | `Static -> "Static"
+
+let vif_ipv4_configuration_mode_of_string m =
+  match String.lowercase m with
+  | "none"   -> `None
+  | "static" -> `Static
+  | s        -> raise (Record_failure ("Expected 'none' or 'static', got "^s))
+
 let ipv6_configuration_mode_to_string = function
   | `None -> "None"
   | `DHCP -> "DHCP"
@@ -400,6 +412,16 @@ let ipv6_configuration_mode_of_string m =
   | "static" -> `Static
   | "autoconf" -> `Autoconf
   | s        -> raise (Record_failure ("Expected 'dhcp','none' 'autoconf' or 'static', got "^s))
+
+let vif_ipv6_configuration_mode_to_string = function
+  | `None -> "None"
+  | `Static -> "Static"
+
+let vif_ipv6_configuration_mode_of_string m =
+  match String.lowercase m with
+  | "none"   -> `None
+  | "static" -> `Static
+  | s        -> raise (Record_failure ("Expected 'none' or 'static', got "^s))
 
 let primary_address_type_to_string = function
   | `IPv4 -> "IPv4"
@@ -459,6 +481,12 @@ let on_boot_to_string onboot =
 	match onboot with
 		| `reset -> "reset"
 		| `persist -> "persist"
+
+let tristate_to_string tristate =
+	match tristate with
+		| `yes -> "true"
+		| `no -> "false"
+		| `unspecified -> "unspecified"
 
 let wrap f err x = try f x with _ -> err x
 let generic_error x = raise (Record_failure ("Unknown value: "^x))

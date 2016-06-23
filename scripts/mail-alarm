@@ -20,6 +20,7 @@ from xml.dom import minidom
 from xml.sax.saxutils import unescape
 from xml.parsers.expat import ExpatError
 from socket import getfqdn
+from xcp import branding
 
 # Go read man ssmtp.conf
 default_config="""
@@ -109,7 +110,8 @@ class EmailTextGenerator:
 
 class CpuUsageAlarmETG(EmailTextGenerator):
     def __init__(self, cls, obj_uuid, value, alarm_trigger_period, alarm_trigger_level):
-        if not alarm_trigger_period: alarm_trigger_period = 60
+        if alarm_trigger_period is None:
+            alarm_trigger_period = 60
         if cls == 'Host':
             self.params = get_host_params(obj_uuid)
         elif cls == 'VM':
@@ -123,25 +125,28 @@ class CpuUsageAlarmETG(EmailTextGenerator):
 
     def generate_subject(self):
         pool_name = get_pool_name()
-        return '[%s] XenServer Alarm: CPU usage on %s "%s"' % (pool_name, self.cls, self.params['name_label'])
+        return '[%s] %s Alarm: CPU usage on %s "%s"' % (pool_name,
+                   branding.PRODUCT_BRAND, self.cls, self.params['name_label'])
     
     def generate_body(self):
         return \
             'CPU usage on %s "%s" has been on average %.1f%% for the last %d seconds.\n' \
             'This alarm is set to be triggered when CPU usage is more than %.1f%%.\n' \
             '\n' \
-            'For Alarm Settings, please log into your XenCenter Console and click on "%s"->\n' \
+            'For Alarm Settings, please log into your %s Console and click on "%s"->\n' \
             '"Properties"->"Alerts"\n' % \
             (self.cls, 
              self.params['name_label'],
              self.value * 100.0,
              self.alarm_trigger_period,
              self.alarm_trigger_level * 100.0, 
+             branding.BRAND_CONSOLE,
              (self.cls == 'Host') and 'Server' or 'VM')
 
 class NetworkUsageAlarmETG(EmailTextGenerator):
     def __init__(self, cls, obj_uuid, value, alarm_trigger_period, alarm_trigger_level):
-        if not alarm_trigger_period: alarm_trigger_period = 60
+        if alarm_trigger_period is None:
+            alarm_trigger_period = 60
         if cls == 'Host':
             self.params = get_host_params(obj_uuid)
         elif cls == 'VM':
@@ -155,25 +160,59 @@ class NetworkUsageAlarmETG(EmailTextGenerator):
 
     def generate_subject(self):
         pool_name = pool_name = get_pool_name()
-        return '[%s] XenServer Alarm: Network usage on %s "%s"' % (pool_name, self.cls, self.params['name_label'])
+        return '[%s] %s Alarm: Network usage on %s "%s"' % (pool_name,
+                   branding.PRODUCT_BRAND, self.cls, self.params['name_label'])
     
     def generate_body(self):
         return \
             'Network usage on %s "%s" has been on average %d B/s for the last %d seconds.\n' \
             'This alarm is set to be triggered when Network usage is more than %d B/s.\n' \
             '\n' \
-            'For Alarm Settings, please log into your XenCenter Console and click on "%s"->\n' \
+            'For Alarm Settings, please log into your %s Console and click on "%s"->\n' \
             '"Properties"->"Alerts"\n' % \
             (self.cls, 
              self.params['name_label'],
              self.value,
              self.alarm_trigger_period,
              self.alarm_trigger_level, 
+             branding.BRAND_CONSOLE,
              (self.cls == 'Host') and 'Server' or 'VM')
+
+class MemoryUsageAlarmETG(EmailTextGenerator):
+    def __init__(self, cls, obj_uuid, value, alarm_trigger_period, alarm_trigger_level):
+        if alarm_trigger_period is None:
+            alarm_trigger_period = 60
+        if cls != 'Host':
+            raise Exception, "programmer error - this alarm should only be available for hosts"
+        self.params = get_host_params(obj_uuid)
+        self.cls = cls
+        self.value = value
+        self.alarm_trigger_period = alarm_trigger_period
+        self.alarm_trigger_level = alarm_trigger_level
+
+    def generate_subject(self):
+        pool_name = pool_name = get_pool_name()
+        return '[%s] %s Alarm: Memory usage on %s "%s"' % (pool_name,
+                   branding.PRODUCT_BRAND, self.cls, self.params['name_label'])
+
+    def generate_body(self):
+        return \
+            'Free memory on %s "%s" has been on average %d KiB for the last %d seconds.\n' \
+            'This alarm is set to be triggered when free memory is less than %d KiB.\n' \
+            '\n' \
+            'For Alarm Settings, please log into your %s Console and click on "Server"->\n' \
+            '"Properties"->"Alerts"\n' % \
+            (self.cls,
+             self.params['name_label'],
+             self.value,
+             self.alarm_trigger_period,
+             self.alarm_trigger_level,
+             branding.BRAND_CONSOLE)
 
 class DiskUsageAlarmETG(EmailTextGenerator):
     def __init__(self, cls, obj_uuid, value, alarm_trigger_period, alarm_trigger_level):
-        if not alarm_trigger_period: alarm_trigger_period = 60
+        if alarm_trigger_period is None:
+            alarm_trigger_period = 60
         if cls != 'VM':
             raise Exception, "programmer error - this alarm should only be available for VMs"
         self.params = get_VM_params(obj_uuid)
@@ -184,23 +223,26 @@ class DiskUsageAlarmETG(EmailTextGenerator):
 
     def generate_subject(self):
         pool_name = get_pool_name()
-        return '[%s] XenServer Alarm: Disk usage on VM "%s"' % (pool_name, self.params['name_label'])
+        return '[%s] %s Alarm: Disk usage on VM "%s"' % (pool_name,
+                   branding.PRODUCT_BRAND, self.params['name_label'])
     
     def generate_body(self):
         return \
             'Disk usage on VM "%s" has been on average %d B/s for the last %d seconds.\n' \
             'This alarm is set to be triggered when Disk usage is more than %d B/s.\n' \
             '\n' \
-            'For Alarm Settings, please log into your XenCenter Console and click on "VM"->\n' \
+            'For Alarm Settings, please log into your %s Console and click on "VM"->\n' \
             '"Properties"->"Alerts"\n' % \
             (self.params['name_label'],
              self.value,
              self.alarm_trigger_period,
-             self.alarm_trigger_level)
+             self.alarm_trigger_level,
+             branding.BRAND_CONSOLE)
 
 class Dom0FSUsageAlarmETG(EmailTextGenerator):
     def __init__(self, cls, obj_uuid, value, alarm_trigger_level):
-        if not alarm_trigger_level: alarm_trigger_level = 0.9
+        if alarm_trigger_level is None:
+            alarm_trigger_level = 0.9
         if cls != 'VM':
             raise Exception, "programmer error - this alarm should only be available for control domain VM"
         self.params = get_VM_params(obj_uuid)
@@ -210,7 +252,8 @@ class Dom0FSUsageAlarmETG(EmailTextGenerator):
 
     def generate_subject(self):
         pool_name = get_pool_name()
-        return '[%s] XenServer Alarm: Filesystem nearly full on "%s"' % (pool_name, self.params['name_label'])
+        return '[%s] %s Alarm: Filesystem nearly full on "%s"' % (pool_name,
+                   branding.PRODUCT_BRAND, self.params['name_label'])
     
     def generate_body(self):
         return \
@@ -221,9 +264,10 @@ class Dom0FSUsageAlarmETG(EmailTextGenerator):
              self.value * 100.0,
              self.alarm_trigger_level * 100.0)
 
-class Dom0MemUsageAlarmETG(EmailTextGenerator):
+class Dom0LogFSUsageAlarmETG(EmailTextGenerator):
     def __init__(self, cls, obj_uuid, value, alarm_trigger_level):
-        if not alarm_trigger_level: alarm_trigger_level = 0.95
+        if alarm_trigger_level is None:
+            alarm_trigger_level = 0.9
         if cls != 'VM':
             raise Exception, "programmer error - this alarm should only be available for control domain VM"
         self.params = get_VM_params(obj_uuid)
@@ -233,7 +277,33 @@ class Dom0MemUsageAlarmETG(EmailTextGenerator):
 
     def generate_subject(self):
         pool_name = get_pool_name()
-        return '[%s] XenServer Alarm: Dom0 memory demand is high on "%s"' % (pool_name, self.params['name_label'])
+        return '[%s] %s Alarm: Log partition nearly full on "%s"' % (pool_name,
+                   branding.PRODUCT_BRAND, self.params['name_label'])
+
+    def generate_body(self):
+        return \
+            'The log partition usage on "%s" is at %.1f%%.\n' \
+            'This alarm is set to be triggered when log partition usage is more than %.1f%%.\n' \
+            '\n' % \
+            (self.params['name_label'],
+             self.value * 100.0,
+             self.alarm_trigger_level * 100.0)
+
+class Dom0MemUsageAlarmETG(EmailTextGenerator):
+    def __init__(self, cls, obj_uuid, value, alarm_trigger_level):
+        if alarm_trigger_level is None:
+            alarm_trigger_level = 0.95
+        if cls != 'VM':
+            raise Exception, "programmer error - this alarm should only be available for control domain VM"
+        self.params = get_VM_params(obj_uuid)
+        self.cls = cls
+        self.value = value
+        self.alarm_trigger_level = alarm_trigger_level
+
+    def generate_subject(self):
+        pool_name = get_pool_name()
+        return '[%s] %s Alarm: Dom0 memory demand is high on "%s"' % (pool_name,
+                   branding.PRODUCT_BRAND, self.params['name_label'])
 
     def generate_body(self):
         return \
@@ -252,7 +322,8 @@ class WlbConsultationFailure(EmailTextGenerator):
 
     def generate_subject(self):
         pool_name = get_pool_name()
-        return '[%s] XenServer Alarm: Attempt to consult wlb for VM "%s" failed' % (self.params['name_label'], pool_name)
+        return '[%s] %s Alarm: Attempt to consult wlb for VM "%s" failed' % (self.params['name_label'],
+                   branding.PRODUCT_BRAND, pool_name)
     
     def generate_body(self):
         return \
@@ -287,7 +358,7 @@ class HAHostFailedETG(EmailTextGenerator):
 
     def generate_subject(self):
         pool_name = get_pool_name()
-        return '[%s] XenServer HA Alarm: %s' % (pool_name, self.text)
+        return '[%s] %s HA Alarm: %s' % (pool_name, branding.PRODUCT_BRAND, self.text)
     
     def generate_body(self):
         return \
@@ -362,10 +433,14 @@ class XapiMessage:
                 etg = CpuUsageAlarmETG(self.cls, self.obj_uuid, value, alarm_trigger_period, alarm_trigger_level)
             elif name == 'network_usage':
                 etg = NetworkUsageAlarmETG(self.cls, self.obj_uuid, value, alarm_trigger_period, alarm_trigger_level)
+            elif name == 'memory_free_kib':
+                etg = MemoryUsageAlarmETG(self.cls, self.obj_uuid, value, alarm_trigger_period, alarm_trigger_level)
             elif name == 'disk_usage':
                 etg = DiskUsageAlarmETG(self.cls, self.obj_uuid, value, alarm_trigger_period, alarm_trigger_level)
             elif name == 'fs_usage':
                 etg = Dom0FSUsageAlarmETG(self.cls, self.obj_uuid, value, alarm_trigger_level)
+            elif name == 'log_fs_usage':
+                etg = Dom0LogFSUsageAlarmETG(self.cls, self.obj_uuid, value, alarm_trigger_level)
             elif name == 'mem_usage':
                 etg = Dom0MemUsageAlarmETG(self.cls, self.obj_uuid, value, alarm_trigger_level)
             else:
@@ -391,7 +466,8 @@ class XapiMessage:
         if generator:
             return generator.generate_subject()
         else:
-            return "[%s] XenServer Message: %s %s %s" % (self.pool_name, self.cls, self.obj_uuid, self.name)
+            return "[%s] %s Message: %s %s %s" % (self.pool_name, branding.PRODUCT_BRAND,
+                                                  self.cls, self.obj_uuid, self.name)
     
     def generate_email_body(self):
         generator = self.__get_email_text_generator()
@@ -420,6 +496,7 @@ def main():
     else:
         min_priority = 3
 
+    charset = other_config.get('mail-charset', 'utf-8')
     msg = XapiMessage(sys.argv[1])
 
     # We only mail messages with priority lower than or equal to max_priority
@@ -437,7 +514,7 @@ def main():
         return 1
 
     if not sender:
-        sender = "noreply@%s" % getfqdn().encode('utf-8')
+        sender = "noreply@%s" % getfqdn().encode(charset)
 
     # Replace macros in config file using search_replace list
     for s,r in search_replace:
@@ -452,11 +529,11 @@ def main():
         # Run ssmtp to send mail
         chld_stdin, chld_stdout = os.popen2(["/usr/sbin/ssmtp", "-C%s" % fname, destination])
         chld_stdin.write("From: %s\n" % sender)
-        chld_stdin.write('Content-Type: text/plain; charset="utf-8"\n')
-        chld_stdin.write("To: %s\n" % destination.encode('utf-8'))
-        chld_stdin.write("Subject: %s\n" % msg.generate_email_subject().encode('utf-8'))
+        chld_stdin.write('Content-Type: text/plain; charset="%s"\n' % charset)
+        chld_stdin.write("To: %s\n" % destination.encode(charset))
+        chld_stdin.write("Subject: %s\n" % msg.generate_email_subject().encode(charset))
         chld_stdin.write("\n")
-        chld_stdin.write(msg.generate_email_body().encode('utf-8'))
+        chld_stdin.write(msg.generate_email_body().encode(charset))
         chld_stdin.close()
         chld_stdout.close()
         os.wait()

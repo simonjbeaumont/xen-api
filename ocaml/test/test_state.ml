@@ -1,5 +1,5 @@
 (*
- * Copyright (C) 2006-2009 Citrix Systems Inc.
+ * Copyright (C) 2006-2013 Citrix Systems Inc.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU Lesser General Public License as published
@@ -12,13 +12,9 @@
  * GNU Lesser General Public License for more details.
  *)
 
-module P = V6rpc.V6process(Fakev6)
+open Test_highlevel
 
-module D=Debug.Make(struct let name="v6daemon" end)
-open D
-
-let _ =
-	Debug.set_facility Syslog.Local5;
-	debug "V6testd started";
-	V6daemon.startup (fun () -> ()) P.process
-
+module XapiDb : Generic.STATE with type state_t = Context.t = struct
+	type state_t = Context.t
+	let create_default_state () = Mock.make_context_with_new_db "test context"
+end

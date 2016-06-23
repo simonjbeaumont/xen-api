@@ -51,8 +51,8 @@ let create_localhost ~__context info =
       Xapi_host.create ~__context ~uuid:info.uuid ~name_label:info.hostname ~name_description:"" 
 	~hostname:info.hostname ~address:ip 
 	~external_auth_type:"" ~external_auth_service_name:"" ~external_auth_configuration:[] 
-	~license_params:[] ~edition:"free" ~license_server:["address", "localhost"; "port", "27000"]
-	~local_cache_sr:Ref.null ~chipset_info:[]
+	~license_params:[] ~edition:"" ~license_server:["address", "localhost"; "port", "27000"]
+	~local_cache_sr:Ref.null ~chipset_info:[] ~ssl_legacy:info.ssl_legacy
     in ()		
 
 (* TODO cat /proc/stat for btime ? *)
@@ -222,12 +222,6 @@ let resynchronise_pif_params ~__context =
 (** Update the database to reflect current state. Called for both start of day and after
    an agent restart. *)
 let update_env __context sync_keys =
-  (* -- used this for testing uniqueness constraints executed on slave do not kill connection.
-     Committing commented out vsn of this because it might be useful again..
-  try
-    test_uniqueness_doesnt_kill_us ~__context
-  with e -> debug "Result of uniqueness constraint check = %s" (Printexc.to_string e);
-  *)
 
   (* Helper function to allow us to switch off particular types of syncing *)
   let switched_sync key f =
@@ -286,12 +280,12 @@ let update_env __context sync_keys =
     Create_misc.create_host_cpu ~__context;
   );
 
+  let localhost = Helpers.get_localhost ~__context in
+
   switched_sync Xapi_globs.sync_create_domain_zero (fun () ->
     debug "creating domain 0";
-    Create_misc.ensure_domain_zero_records ~__context info;
+    Create_misc.ensure_domain_zero_records ~__context ~host:localhost info;
   );
-
-  let localhost = Helpers.get_localhost ~__context in
 
   switched_sync Xapi_globs.sync_crashdump_resynchronise (fun () ->
     debug "resynchronising host crashdumps";

@@ -34,7 +34,7 @@ open D
 
 exception InvalidOperation of string
 
-let assert_operation_valid = Xapi_vm_lifecycle.assert_operation_valid
+let assert_operation_valid = Xapi_vm_lifecycle.assert_operation_valid ~strict:true
 
 let update_allowed_operations ~__context ~self =
 	Helpers.log_exn_continue "updating allowed operations of VBDs/VIFs/VDIs in VM.update_allowed_operations"
@@ -63,7 +63,7 @@ let retrieve_wlb_recommendations ~__context ~vm =
 	let snapshot = Db.VM.get_record ~__context ~self:vm in
 	retrieve_wlb_recommendations ~__context ~vm ~snapshot
 
-let assert_agile ~__context ~self = Helpers.vm_assert_agile ~__context ~self
+let assert_agile ~__context ~self = Agility.vm_assert_agile ~__context ~self
 
 (* helpers *)
 let immediate_complete ~__context   =
@@ -202,17 +202,23 @@ let start ~__context ~vm ~start_paused ~force =
 	Db.VM.set_guest_metrics ~__context ~self:vm ~value:Ref.null;
 	(try Db.VM_guest_metrics.destroy ~__context ~self:vm_gm with _ -> ());
 
-	(* This makes sense here while the available versions are 0 and 1.
-	 * If/when we introduce version 2, we must reassess this. *)
+	(* This makes sense here while the available versions are 0, 1 and 2.
+	 * If/when we introduce another version, we must reassess this. *)
 	update_vm_virtual_hardware_platform_version ~__context ~vm;
+
+	(* Reset CPU feature set, which will be passed to xenopsd *)
+	Cpuid_helpers.reset_cpu_flags ~__context ~vm;
 
 	(* If the VM has any vGPUs, gpumon must remain stopped until the
 	 * VM has started. *)
-	match vmr.API.vM_VGPUs with
-	| [] -> Xapi_xenops.start ~__context ~self:vm start_paused
-	| _ ->
-		Xapi_gpumon.with_gpumon_stopped
-			~f:(fun () -> Xapi_xenops.start ~__context ~self:vm start_paused)
+	begin
+		match vmr.API.vM_VGPUs with
+		| [] -> Xapi_xenops.start ~__context ~self:vm start_paused
+		| _ ->
+			Xapi_gpumon.with_gpumon_stopped ~timeout:!Xapi_globs.gpumon_stop_timeout
+				(fun () -> Xapi_xenops.start ~__context ~self:vm start_paused)
+	end;
+	Xapi_vm_helpers.start_delay ~__context ~vm
 
 (** For VM.start_on and VM.resume_on the message forwarding layer should only forward here
     if 'host' = localhost *)
@@ -230,14 +236,11 @@ let start_on  ~__context ~vm ~host ~start_paused ~force =
 	assert_host_is_localhost ~__context ~host;
 	start ~__context ~vm ~start_paused ~force
 
-let hard_reboot ~__context ~vm =
-	update_vm_virtual_hardware_platform_version ~__context ~vm;
-	Xapi_xenops.reboot ~__context ~self:vm None
-
 let hard_shutdown ~__context ~vm =
 	Db.VM.set_ha_always_run ~__context ~self:vm ~value:false;
 	debug "Setting ha_always_run on vm=%s as false during VM.hard_shutdown" (Ref.string_of vm);
-	if Db.VM.get_power_state ~__context ~self:vm = `Suspended then begin
+	match Db.VM.get_power_state ~__context ~self:vm with
+	| `Suspended -> begin
 		debug "hard_shutdown: destroying any suspend VDI";
 		let vdi = Db.VM.get_suspend_VDI ~__context ~self:vm in
 		if vdi <> Ref.null (* avoid spurious but scary messages *)
@@ -248,8 +251,25 @@ let hard_shutdown ~__context ~vm =
 		(* Whether or not that worked, forget about the VDI *)
 		Db.VM.set_suspend_VDI ~__context ~self:vm ~value:Ref.null;
 		Xapi_vm_lifecycle.force_state_reset ~__context ~self:vm ~value:`Halted;
-	end else
-	Xapi_xenops.shutdown ~__context ~self:vm None
+	end
+	| `Running
+	| `Paused ->
+		Xapi_xenops.shutdown ~__context ~self:vm None;
+		Xapi_vm_helpers.shutdown_delay ~__context ~vm
+	| `Halted -> ()
+
+let hard_reboot ~__context ~vm =
+	(* Cancelling operations can cause the VM to now be shutdown *)
+	begin
+	match Db.VM.get_power_state ~__context ~self:vm with
+	| `Running
+	| `Paused ->
+		Xapi_xenops.reboot ~__context ~self:vm None
+	| `Halted ->
+		start ~__context ~vm ~start_paused:false ~force:false
+	| `Suspended ->
+		raise (Api_errors.Server_error (Api_errors.vm_bad_power_state, [Ref.string_of vm; Record_util.power_to_string `Running; Record_util.power_to_string `Suspended]))
+	end
 
 let clean_reboot ~__context ~vm =
 	update_vm_virtual_hardware_platform_version ~__context ~vm;
@@ -258,7 +278,8 @@ let clean_reboot ~__context ~vm =
 let clean_shutdown_with_timeout ~__context ~vm timeout =
 	Db.VM.set_ha_always_run ~__context ~self:vm ~value:false;
 	debug "Setting ha_always_run on vm=%s as false during VM.clean_shutdown" (Ref.string_of vm);
-	Xapi_xenops.shutdown ~__context ~self:vm (Some timeout)
+	Xapi_xenops.shutdown ~__context ~self:vm (Some timeout);
+	Xapi_vm_helpers.shutdown_delay ~__context ~vm
 
 let clean_shutdown ~__context ~vm =
 	clean_shutdown_with_timeout ~__context ~vm !Xapi_globs.domain_shutdown_total_timeout
@@ -274,7 +295,7 @@ let shutdown ~__context ~vm =
 		with e ->
 			warn "Failed to perform clean_shutdown on VM:%s due to exception %s. Now attempting hard_shutdown." (Ref.string_of vm) (Printexc.to_string e);
 			hard_shutdown ~__context ~vm
-	end 	
+	end
 
 (***************************************************************************************)
 
@@ -349,6 +370,9 @@ let resume ~__context ~vm ~start_paused ~force =
 	let host = Helpers.get_localhost ~__context in
 	if not force then Cpuid_helpers.assert_vm_is_compatible ~__context ~vm ~host ();
 
+	(* Update CPU feature set, which will be passed to xenopsd *)
+	Cpuid_helpers.update_cpu_flags ~__context ~vm ~host;
+	
 	Xapi_xenops.resume ~__context ~self:vm ~start_paused ~force
 
 let resume_on  ~__context ~vm ~host ~start_paused ~force =
@@ -359,11 +383,9 @@ let resume_on  ~__context ~vm ~host ~start_paused ~force =
 	assert_host_is_localhost ~__context ~host;
 	resume ~__context ~vm ~start_paused ~force
 
-let create ~__context
-		~name_label
-		~name_description
-		~user_version
-		~is_a_template
+
+let create ~__context ~name_label ~name_description
+		~user_version ~is_a_template
 		~affinity
 		~memory_target
 		~memory_static_max
@@ -371,30 +393,16 @@ let create ~__context
 		~memory_dynamic_min
 		~memory_static_min
 		~vCPUs_params
-		~vCPUs_max
-		~vCPUs_at_startup
-		~actions_after_shutdown
-		~actions_after_reboot
+		~vCPUs_max ~vCPUs_at_startup
+		~actions_after_shutdown ~actions_after_reboot
 		~actions_after_crash
 		~pV_bootloader
-		~pV_kernel
-		~pV_ramdisk
-		~pV_args
-		~pV_bootloader_args
-		~pV_legacy_args
-		~hVM_boot_policy
-		~hVM_boot_params
-		~hVM_shadow_multiplier
+		~pV_kernel ~pV_ramdisk ~pV_args ~pV_bootloader_args ~pV_legacy_args
+		~hVM_boot_policy ~hVM_boot_params ~hVM_shadow_multiplier
 		~platform
-		~pCI_bus
-		~other_config
-		~recommendations
-		~xenstore_data
-		~ha_always_run
-		~ha_restart_priority
-		~tags
-		~blocked_operations
-		~protection_policy
+		~pCI_bus ~other_config ~recommendations ~xenstore_data
+		~ha_always_run ~ha_restart_priority ~tags
+		~blocked_operations ~protection_policy
 		~is_snapshot_from_vmpp
 		~appliance
 		~start_delay
@@ -404,53 +412,75 @@ let create ~__context
 		~version
 		~generation_id
 		~hardware_platform_version
-		~auto_update_drivers
 		~has_vendor_device
 		: API.ref_VM =
-	let gen_mac_seed () = Uuid.to_string (Uuid.make_uuid ()) in
+
+	if has_vendor_device then
+		Pool_features.assert_enabled ~__context ~f:Features.PCI_device_for_auto_update;
 	(* Add random mac_seed if there isn't one specified already *)
 	let other_config =
+		let gen_mac_seed () = Uuid.to_string (Uuid.make_uuid ()) in
 		if not (List.mem_assoc Xapi_globs.mac_seed other_config)
 		then (Xapi_globs.mac_seed, gen_mac_seed ()) :: other_config
 		else other_config
 	in
-	create ~__context
-		~name_label
-		~name_description
-		~user_version
-		~is_a_template
-		~affinity
-		~memory_target
+	(* NB apart from the above, parameter validation is delayed until VM.start *)
+
+	let uuid = Uuid.make_uuid () in
+	let vm_ref = Ref.make () in
+	let resident_on = Ref.null in
+	let scheduled_to_be_resident_on = Ref.null in
+
+	let metrics = Ref.make () and metrics_uuid = Uuid.to_string (Uuid.make_uuid ()) in
+	let vCPUs_utilisation = [(0L, 0.)] in
+	Db.VM_metrics.create ~__context ~ref:metrics ~uuid:metrics_uuid
+		~memory_actual:0L ~vCPUs_number:0L
+		~vCPUs_utilisation
+		~vCPUs_CPU:[]
+		~vCPUs_params:[]
+		~vCPUs_flags:[]
+		~state:[]
+		~start_time:Date.never
+		~install_time:Date.never
+		~last_updated:Date.never
+		~other_config:[];
+	Db.VM.create ~__context ~ref:vm_ref ~uuid:(Uuid.to_string uuid)
+		~power_state:(`Halted) ~allowed_operations:[]
+		~current_operations:[]
+		~blocked_operations:[]
+		~name_label ~name_description
+		~user_version ~is_a_template
+		~transportable_snapshot_id:""
+		~is_a_snapshot:false ~snapshot_time:Date.never ~snapshot_of:Ref.null
+		~parent:Ref.null
+		~snapshot_info:[] ~snapshot_metadata:""
+		~resident_on ~scheduled_to_be_resident_on ~affinity
+		~memory_overhead:0L
 		~memory_static_max
 		~memory_dynamic_max
+		~memory_target
 		~memory_dynamic_min
 		~memory_static_min
 		~vCPUs_params
-		~vCPUs_max
-		~vCPUs_at_startup
-		~actions_after_shutdown
-		~actions_after_reboot
+		~vCPUs_at_startup ~vCPUs_max
+		~actions_after_shutdown ~actions_after_reboot
 		~actions_after_crash
-		~pV_bootloader
-		~pV_kernel
-		~pV_ramdisk
-		~pV_args
-		~pV_bootloader_args
-		~pV_legacy_args
-		~hVM_boot_policy
-		~hVM_boot_params
-		~hVM_shadow_multiplier
+		~hVM_boot_policy ~hVM_boot_params ~hVM_shadow_multiplier
+		~suspend_VDI:Ref.null
 		~platform
-		~pCI_bus
-		~other_config
-		~recommendations
-		~xenstore_data
-		~ha_always_run
+		~pV_kernel ~pV_ramdisk ~pV_args ~pV_bootloader ~pV_bootloader_args
+		~pV_legacy_args
+		~pCI_bus ~other_config ~domid:(-1L) ~domarch:""
+		~last_boot_CPU_flags:[]
+		~is_control_domain:false
+		~metrics ~guest_metrics:Ref.null
+		~last_booted_record:"" ~xenstore_data ~recommendations
+		~blobs:[]
 		~ha_restart_priority
-		~tags
-		~blocked_operations
-		~protection_policy
-		~is_snapshot_from_vmpp
+		~ha_always_run ~tags
+		~bios_strings:[]
+		~protection_policy:Ref.null
+		~is_snapshot_from_vmpp:false
 		~appliance
 		~start_delay
 		~shutdown_delay
@@ -459,8 +489,13 @@ let create ~__context
 		~version
 		~generation_id
 		~hardware_platform_version
-		~auto_update_drivers
 		~has_vendor_device
+		;
+	Db.VM.set_power_state ~__context ~self:vm_ref ~value:`Halted;
+	Xapi_vm_lifecycle.update_allowed_operations ~__context ~self:vm_ref;
+	update_memory_overhead ~__context ~vm:vm_ref;
+	update_vm_virtual_hardware_platform_version ~__context ~vm:vm_ref;
+	vm_ref
 
 let destroy  ~__context ~self =
 	let parent = Db.VM.get_parent ~__context ~self in
@@ -499,12 +534,9 @@ let snapshot ~__context ~vm ~new_name =
 (* Snapshot_with_quiesce triggers the VSS plugin which will then calls the VM.snapshot API call.     *)
 (* Thus, to avoid dead-locks, do not put snapshot and snapshot_with_quiesce on the same waiting line *)
 let snapshot_with_quiesce ~__context ~vm ~new_name =
-	if not (Pool_features.is_enabled ~__context Features.VSS)
-	then raise (Api_errors.Server_error(Api_errors.license_restriction, []))
-	else begin
-		TaskHelper.set_cancellable ~__context;
-		Xapi_vm_snapshot.snapshot_with_quiesce ~__context ~vm ~new_name
-	end
+	Pool_features.assert_enabled ~__context ~f:Features.VSS;
+	TaskHelper.set_cancellable ~__context;
+	Xapi_vm_snapshot.snapshot_with_quiesce ~__context ~vm ~new_name
 
 (* As we will destroy the domain ourself, we grab the vm_lock here in order to tell the event thread to *)
 (* do not look at this domain. The message forwarding layer already checked that the VM reference we    *)
@@ -521,16 +553,13 @@ let revert ~__context ~snapshot =
 (* As the checkpoint operation modify the domain state, we take the vm_lock to do not let the event *)
 (* thread mess around with that. *)
 let checkpoint ~__context ~vm ~new_name =
-	if not (Pool_features.is_enabled ~__context Features.Checkpoint) then
-		raise (Api_errors.Server_error(Api_errors.license_restriction, []))
-	else begin
-		Local_work_queue.wait_in_line Local_work_queue.long_running_queue
-			(Printf.sprintf "VM.checkpoint %s" (Context.string_of_task __context))
-			(fun () ->
-				TaskHelper.set_cancellable ~__context;
-				Xapi_vm_snapshot.checkpoint ~__context ~vm ~new_name
-			)
-	end
+	Pool_features.assert_enabled ~__context ~f:Features.Checkpoint;
+	Local_work_queue.wait_in_line Local_work_queue.long_running_queue
+		(Printf.sprintf "VM.checkpoint %s" (Context.string_of_task __context))
+		(fun () ->
+			TaskHelper.set_cancellable ~__context;
+			Xapi_vm_snapshot.checkpoint ~__context ~vm ~new_name
+		)
 
 let copy ~__context ~vm ~new_name ~sr =
 	(* See if the supplied SR is suitable: it must exist and be a non-ISO SR *)
@@ -1065,16 +1094,15 @@ let import ~__context ~url ~sr ~full_restore ~force =
 let query_services ~__context ~self =
 	raise (Api_errors.Server_error(Api_errors.not_implemented, [ "query_services" ]))
 
-let assert_can_set_auto_update_drivers ~__context ~self ~value =
-	Xapi_vm_lifecycle.assert_power_state_is ~__context ~self ~expected:`Halted;
-	let vm_gm = Db.VM.get_guest_metrics ~__context ~self in
-	let network_optimized = try Db.VM_guest_metrics.get_network_paths_optimized ~__context ~self:vm_gm with _ -> false in
-	let storage_optimized = try Db.VM_guest_metrics.get_storage_paths_optimized ~__context ~self:vm_gm with _ -> false in
-	if storage_optimized || network_optimized
-	then
-		raise (Api_errors.Server_error(Api_errors.vm_pv_drivers_in_use, [ Ref.string_of self ]))
+let assert_can_set_has_vendor_device ~__context ~self ~value =
+	if value
+	(* Do the check even for templates, because snapshots are templates and
+	 * we allow restoration of a VM from a snapshot. *)
+	then Pool_features.assert_enabled ~__context ~f:Features.PCI_device_for_auto_update;
 
-let set_auto_update_drivers ~__context ~self ~value=	
-	assert_can_set_auto_update_drivers ~__context ~self ~value;
-	Db.VM.set_auto_update_drivers ~__context ~self ~value
+	Xapi_vm_lifecycle.assert_power_state_is ~__context ~self ~expected:`Halted
 
+let set_has_vendor_device ~__context ~self ~value =
+	assert_can_set_has_vendor_device ~__context ~self ~value;
+	Db.VM.set_has_vendor_device ~__context ~self ~value;
+	update_vm_virtual_hardware_platform_version ~__context ~vm:self

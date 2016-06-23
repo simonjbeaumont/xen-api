@@ -46,9 +46,6 @@ let raise_not_initialized () =
 let raise_disabled () =
   raise (Api_errors.Server_error (Api_errors.wlb_disabled, []))
 
-let raise_license_restriction () =
-  raise (Api_errors.Server_error(Api_errors.license_restriction, []))
-
 let raise_timeout timeout =
   raise (Api_errors.Server_error
            (Api_errors.wlb_timeout, [string_of_float timeout]))
@@ -97,9 +94,7 @@ let wlb_host_port ~__context =
     split_host_port url
 
 let assert_wlb_licensed ~__context =
-  if not (Pool_features.is_enabled ~__context Features.WLB)
-  then
-    raise_license_restriction()
+  Pool_features.assert_enabled ~__context ~f:Features.WLB
 
 let assert_wlb_initialized ~__context =
   let pool = Helpers.get_pool ~__context in
@@ -573,8 +568,8 @@ let retrieve_wlb_config ~__context =
   perform_wlb_request ~meth:"GetXenPoolConfiguration" ~params ~handle_response
     ~__context ()
 
-  let get_dom0_vm ~__context host=
-    List.hd (List.filter (fun v -> (Db.VM.get_is_control_domain ~__context ~self:v)) (Db.Host.get_resident_VMs ~__context ~self:(Db.Host.get_by_uuid ~__context ~uuid:host)))
+  let get_dom0_vm ~__context host =
+    Db.Host.get_control_domain ~__context ~self:(Db.Host.get_by_uuid ~__context ~uuid:host)
 
 let get_opt_recommendations ~__context =
   assert_wlb_enabled ~__context;

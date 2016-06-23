@@ -118,7 +118,6 @@ let remove_restricted_pbd_keys () =
 			(List.mem_assoc k device_config')
 	) other_keys
 
-
 let test =
 	"test_db_upgrade" >:::
 		[

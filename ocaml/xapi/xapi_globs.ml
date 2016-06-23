@@ -14,6 +14,7 @@
 
 (** A central location for settings related to xapi *)
 
+module String_plain = String (* For when we don't want the Xstringext version *)
 open Xstringext
 open Printf
 
@@ -193,12 +194,13 @@ let vm_minimum_memory = 16L ** 1024L ** 1024L (* don't start VMs with less than 
 
 let grant_api_access = "grant_api_access"
 
-(* From Miami GA onward we identify the tools SR with the SR.other_config key: *)
+(* From Miami GA onward we identify the tools SR with the following SR.other_config key. *)
+(* In Dundee we introduced the SR.is_tools_sr field for this purpose, but left the *)
+(* other-config key for backwards compat. *)
 let tools_sr_tag = "xenserver_tools_sr"
 
-(* Rio and Miami beta1 and beta2 used the following name-labels: *)
-let rio_tools_sr_name = "XenSource Tools"
-let miami_tools_sr_name = "XenServer Tools"
+let tools_sr_name () = Version.product_brand () ^ " Tools"
+let tools_sr_description () = tools_sr_name () ^ " ISOs"
 
 let tools_sr_dir = ref "/opt/xensource/packages/iso"
 
@@ -503,6 +505,7 @@ let igd_passthru_key = "igd_passthrough"
 let vgt_low_gm_sz = "vgt_low_gm_sz"
 let vgt_high_gm_sz = "vgt_high_gm_sz"
 let vgt_fence_sz = "vgt_fence_sz"
+let vgt_monitor_config_file = "vgt_monitor_config_file"
 
 let dev_zero = "/dev/zero"
 
@@ -619,12 +622,10 @@ let old_hp_bios_strings =
 
 (** {2 CPUID feature masking} *)
 
-(** Pool.other_config key to hold the user-defined feature mask, used to
- *  override the feature equality checks at a Pool.join. *)
-let cpuid_feature_mask_key = "cpuid_feature_mask"
-
-(** Default feature mask: EST (base_ecx.7) is ignored. *)
-let cpuid_default_feature_mask = "ffffff7f-ffffffff-ffffffff-ffffffff"
+let cpu_info_vendor_key = "vendor"
+let cpu_info_features_key = "features"
+let cpu_info_features_pv_key = "features_pv"
+let cpu_info_features_hvm_key = "features_hvm"
 
 (** Path to trigger file for Network Reset. *)
 let network_reset_trigger = "/tmp/network-reset"
@@ -754,6 +755,8 @@ let vm_call_plugin_interval = ref 10.
 
 let nowatchdog = ref false
 
+let log_getter = ref false
+
 (* Path to the pool configuration file. *)
 let pool_config_file = ref (Filename.concat "/etc/xensource" "pool.conf")
 
@@ -835,8 +838,6 @@ let gvt_g_whitelist = ref "/etc/gvt-g-whitelist"
  * should be set with disallow-unplug=true, during a PIF.scan. *)
 let non_managed_pifs = ref "/opt/xensource/libexec/bfs-interfaces"
 
-let manage_xenvmd = ref true
-
 let sr_health_check_task_label = "SR Recovering"
 
 type xapi_globs_spec_ty = | Float of float ref | Int of int ref
@@ -898,8 +899,6 @@ let options_of_xapi_globs_spec =
 
 let xapissl_path = ref "xapissl"
 
-let xenvmd_path = ref "xenvmd"
-
 let xenopsd_queues = ref ([
   "org.xen.xapi.xenops.classic";
   "org.xen.xapi.xenops.simulator";
@@ -907,6 +906,11 @@ let xenopsd_queues = ref ([
 ])
 
 let default_xenopsd = ref "org.xen.xapi.xenops.xenlight"
+
+let ciphersuites_good_outbound = ref None
+let ciphersuites_legacy_outbound = ref ""
+
+let gpumon_stop_timeout = ref 10.0
 
 (* Fingerprint of default patch key *)
 let citrix_patch_key = "NERDNTUzMDMwRUMwNDFFNDI4N0M4OEVCRUFEMzlGOTJEOEE5REUyNg=="
@@ -954,6 +958,9 @@ let other_options = [
   "nowatchdog", Arg.Set nowatchdog, 
     (fun () -> string_of_bool !nowatchdog), "turn watchdog off, avoiding initial fork";
 
+  "log-getter", Arg.Set log_getter,
+    (fun () -> string_of_bool !log_getter), "Enable/Disable logging for getters";
+
   "onsystemboot", Arg.Set on_system_boot, 
     (fun () -> string_of_bool !on_system_boot), "indicates that this server start is the first since the host rebooted";
 
@@ -987,18 +994,25 @@ let other_options = [
   "pass-through-pif-carrier", Arg.Set pass_through_pif_carrier,
   (fun () -> string_of_bool !pass_through_pif_carrier), "reflect physical interface carrier information to VMs by default";
 
-  "manage_xenvmd", Arg.Set manage_xenvmd,
-  (fun () -> string_of_bool !manage_xenvmd), "Start and stop xenvmd instances on behalf of the SM backends";
-
   "cluster-stack-default", Arg.Set_string cluster_stack_default,
     (fun () -> !cluster_stack_default), "Default cluster stack (HA)";
+
+  "ciphersuites-good-outbound", Arg.String (fun s -> ciphersuites_good_outbound := if String_plain.trim s <> "" then Some s else None),
+    (fun () -> match !ciphersuites_good_outbound with None -> "" | Some s -> s),
+    "Preferred set of ciphersuites for outgoing TLS connections. (This list must match, or at least contain one of, the GOOD_CIPHERS in the 'xapissl' script for starting the listening stunnel.)";
+
+  "ciphersuites-legacy-outbound", Arg.Set_string ciphersuites_legacy_outbound,
+    (fun () -> !ciphersuites_legacy_outbound), "For backwards compatibility: to be used in addition to ciphersuites-good-outbound for outgoing TLS connections";
+
+  "gpumon_stop_timeout", Arg.Set_float gpumon_stop_timeout,
+    (fun () -> string_of_float !gpumon_stop_timeout), "Time to wait after attempting to stop gpumon when launching a vGPU-enabled VM.";
 ] 
 
 let all_options = options_of_xapi_globs_spec @ other_options
 
 (* VIRTUAL HARDWARE PLATFORM VERSIONS *)
 
-let auto_update_drivers = 2L
+let has_vendor_device = 2L
 
 (* This set is used as an indicator to show the virtual hardware
    platform versions the current host offers to its guests *)
@@ -1015,17 +1029,17 @@ let host_virtual_hardware_platform_versions = [
 	   the whole history of older host versions. *)
 	1L;
 
-	(* Version two which is "auto_update_drivers" will be the first virtual
-		hardware platform versionto offer the option of an emulated PCI
+	(* Version two which is "has_vendor_device" will be the first virtual
+		hardware platform version to offer the option of an emulated PCI
 		device used to trigger a guest to install or upgrade its PV tools
 		(originally introduced to exploit the Windows Update system). *)
-	auto_update_drivers;
+	has_vendor_device;
 ]
 
 module Resources = struct
 
 	let essential_executables = [
-		"xapissl", xapissl_path, "Script for starting stunnel";
+		"xapissl", xapissl_path, "Script for starting the listening stunnel";
 		"busybox", busybox, "Swiss army knife executable - used as DHCP server";
 		"pbis-force-domain-leave-script", pbis_force_domain_leave_script, "Executed when PBIS domain-leave fails";
 		"redo-log-block-device-io", redo_log_block_device_io, "Used by the redo log for block device I/O";
@@ -1050,7 +1064,6 @@ module Resources = struct
 		"rolling-upgrade-script-hook", rolling_upgrade_script_hook, "Executed when a rolling upgrade is detected starting or stopping";
 		"xapi-message-script", xapi_message_script, "Executed when messages are generated if email feature is disabled";
 		"non-managed-pifs", non_managed_pifs, "Executed during PIF.scan to find out which NICs should not be managed by xapi";
-		"xenvmd", xenvmd_path, "Xenvmd executable for thin-provisioned block storage";
 		"update-issue", update_issue_script, "Running update-service when configuring the management interface";
 		"killall", kill_process_script, "Executed to kill process";
 	]

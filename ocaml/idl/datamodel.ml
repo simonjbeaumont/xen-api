@@ -18,7 +18,7 @@ open Datamodel_types
 (* IMPORTANT: Please bump schema vsn if you change/add/remove a _field_.
               You do not have to bump vsn if you change/add/remove a message *)
 let schema_major_vsn = 5
-let schema_minor_vsn = 90
+let schema_minor_vsn = 100
 
 (* Historical schema versions just in case this is useful later *)
 let rio_schema_major_vsn = 5
@@ -66,12 +66,34 @@ let creedence_release_schema_minor_vsn = 72
 let cream_release_schema_major_vsn = 5
 let cream_release_schema_minor_vsn = 73
 
+let indigo_release_schema_major_vsn = 5
+let indigo_release_schema_minor_vsn = 74
+
+let dundee_tech_preview_release_schema_major_vsn = 5
+let dundee_tech_preview_release_schema_minor_vsn = 91
+
+(* This is to support upgrade from Dundee tech-preview versions and other nearly-Dundee versions.
+ * The field has_vendor_device was added while minor vsn was 90, then became meaningful later;
+ * the first published tech preview in which the feature was active had datamodel minor vsn 91. *)
+let meaningful_vm_has_vendor_device_schema_major_vsn = dundee_tech_preview_release_schema_major_vsn
+let meaningful_vm_has_vendor_device_schema_minor_vsn = dundee_tech_preview_release_schema_minor_vsn
+
 let dundee_release_schema_major_vsn = 5
-let dundee_release_schema_minor_vsn = 90
+let dundee_release_schema_minor_vsn = 93
+
+let ely_release_schema_major_vsn = 5
+let ely_release_schema_minor_vsn = 100
 
 (* the schema vsn of the last release: used to determine whether we can upgrade or not.. *)
-let last_release_schema_major_vsn = cream_release_schema_major_vsn
-let last_release_schema_minor_vsn = cream_release_schema_minor_vsn
+let last_release_schema_major_vsn = dundee_release_schema_major_vsn
+let last_release_schema_minor_vsn = dundee_release_schema_minor_vsn
+
+(* List of tech-preview releases. Fields in these releases are not guaranteed to be retained when
+ * upgrading to a full release. *)
+let tech_preview_releases = [
+	vgpu_tech_preview_release_schema_major_vsn,   vgpu_tech_preview_release_schema_minor_vsn;
+	dundee_tech_preview_release_schema_major_vsn, dundee_tech_preview_release_schema_minor_vsn;
+]
 
 (** Bindings for currently specified releases *)
 
@@ -189,6 +211,12 @@ let get_product_releases in_product_since =
       [] -> raise UnspecifiedRelease
     | x::xs -> if x=in_product_since then "closed"::x::xs else go_through_release_order xs
   in go_through_release_order release_order
+
+let dundee_plus_release =
+	{ internal = get_product_releases rel_dundee_plus
+	; opensource=get_oss_releases None
+	; internal_deprecated_since=None
+	}
 
 let dundee_release =
 	{ internal = get_product_releases rel_dundee
@@ -360,6 +388,9 @@ let call ~name ?(doc="") ?(in_oss_since=Some "3.0.3") ?in_product_since ?interna
 		msg_forward_to = forward_to;
 	}
 
+let errnames_of_call c =
+	List.map (fun e -> e.err_name) c.msg_errors
+
 let assert_operation_valid enum cls self = call 
   ~in_oss_since:None
   ~in_product_since:rel_rio
@@ -416,8 +447,8 @@ let _ =
     ~doc:"Your license has expired.  Please contact your support representative." ();
   error Api_errors.license_processing_error []
     ~doc:"There was an error processing your license.  Please contact your support representative." ();
-  error Api_errors.license_restriction []
-    ~doc:"This operation is not allowed under your license.  Please contact your support representative." ();
+  error Api_errors.license_restriction ["feature"]
+    ~doc:"This operation is not allowed because your license lacks a needed feature.  Please contact your support representative." ();
   error Api_errors.license_cannot_downgrade_in_pool []
     ~doc:"Cannot downgrade license while in pool. Please disband the pool first, then downgrade licenses on hosts separately." ();
   error Api_errors.license_does_not_support_pooling []
@@ -511,10 +542,16 @@ let _ =
     ~doc:"You cannot bond interfaces across different hosts." ();
   error Api_errors.pif_bond_needs_more_members []
     ~doc:"A bond must consist of at least two member interfaces" ();
+  error Api_errors.pif_bond_more_than_one_ip []
+    ~doc:"Only one PIF on a bond is allowed to have an IP configuration." ();
   error Api_errors.pif_configuration_error [ "PIF"; "msg" ]
     ~doc:"An unknown error occurred while attempting to configure an interface." ();
   error Api_errors.invalid_ip_address_specified [ "parameter" ]
     ~doc:"A required parameter contained an invalid IP address" ();
+  error Api_errors.invalid_cidr_address_specified [ "parameter" ]
+    ~doc:"A required parameter contained an invalid CIDR address (<addr>/<prefix length>)" ();
+  error Api_errors.address_violates_locking_constraint [ "address" ]
+    ~doc:"The specified IP address violates the VIF locking configuration." ();
   error Api_errors.pif_is_management_iface [ "PIF" ]
     ~doc:"The operation you requested cannot be performed because the specified PIF is the management interface." ();
   error Api_errors.pif_does_not_allow_unplug [ "PIF" ]
@@ -636,6 +673,8 @@ let _ =
 	  ~doc:"You attempted an operation which needs the VM hotplug-vcpu feature on a VM which lacks it." ();
   error Api_errors.vm_lacks_feature_suspend [ "vm" ]
 	  ~doc:"You attempted an operation which needs the VM cooperative suspend feature on a VM which lacks it." ();
+  error Api_errors.vm_lacks_feature_static_ip_setting [ "vm" ]
+	  ~doc:"You attempted an operation which needs the VM static-ip-setting feature on a VM which lacks it." ();
   error Api_errors.vm_is_template ["vm"]
     ~doc:"The operation attempted is not valid for a template VM" ();
   error Api_errors.other_operation_in_progress ["class"; "object"]
@@ -680,9 +719,9 @@ let _ =
   error Api_errors.xen_vss_req_error_init_failed [ "vm"; "error_code" ]
     ~doc:"Initialization of the VSS requester failed" ();
   error Api_errors.xen_vss_req_error_prov_not_loaded [ "vm"; "error_code" ]
-    ~doc:"The Citrix XenServer Vss Provider is not loaded" ();
+    ~doc:"The Vss Provider is not loaded" ();
   error Api_errors.xen_vss_req_error_no_volumes_supported [ "vm"; "error_code" ]
-    ~doc:"Could not find any volumes supported by the Citrix XenServer Vss Provider" ();
+    ~doc:"Could not find any volumes supported by the Vss Provider" ();
   error Api_errors.xen_vss_req_error_start_snapshot_set_failed [ "vm"; "error_code" ]
     ~doc:"An attempt to start a new VSS snapshot failed" ();
   error Api_errors.xen_vss_req_error_adding_volume_to_snapset_failed [ "vm"; "error_code" ]
@@ -782,8 +821,6 @@ let _ =
   (* Pool errors *)
   error Api_errors.pool_joining_host_cannot_contain_shared_SRs []
     ~doc:"The host joining the pool cannot contain any shared storage." ();
-  error Api_errors.pool_joining_host_cannot_contain_network_bond []
-    ~doc:"The host joining the pool cannot contain any network bond." ();
   error Api_errors.pool_joining_host_cannot_have_running_or_suspended_VMs []
     ~doc:"The host joining the pool cannot have any running or suspended VMs." ();
   error Api_errors.pool_joining_host_cannot_have_running_VMs []
@@ -802,6 +839,8 @@ let _ =
     ~doc:"Cannot join pool whose external authentication configuration is different." ();
   error Api_errors.pool_joining_host_must_have_same_product_version []
     ~doc:"The host joining the pool must have the same product version as the pool master." ();
+  error Api_errors.pool_joining_host_must_only_have_physical_pifs []
+    ~doc:"The host joining the pool may not have any bonds, VLANs or tunnels." ();
   error Api_errors.pool_hosts_not_compatible []
     ~doc:"The hosts in this pool are not compatible." ();
   error Api_errors.pool_hosts_not_homogeneous [ "reason" ]
@@ -851,29 +890,29 @@ let _ =
   error Api_errors.wlb_disabled []
     ~doc:"This pool has wlb-enabled set to false." ();
   error Api_errors.wlb_connection_refused []
-    ~doc:"The WLB server refused a connection to XenServer." ();
+    ~doc:"WLB refused a connection to the server." ();
   error Api_errors.wlb_unknown_host []
     ~doc:"The configured WLB server name failed to resolve in DNS." ();
   error Api_errors.wlb_timeout ["configured_timeout"]
     ~doc:"The communication with the WLB server timed out." ();
   error Api_errors.wlb_authentication_failed []
-    ~doc:"The WLB server rejected our configured authentication details." ();
+    ~doc:"WLB rejected our configured authentication details." ();
   error Api_errors.wlb_malformed_request []
-    ~doc:"The WLB server rejected XenServer's request as malformed." ();
+    ~doc:"WLB rejected the server's request as malformed." ();
   error Api_errors.wlb_malformed_response ["method"; "reason"; "response"]
-    ~doc:"The WLB server said something that XenServer wasn't expecting or didn't understand.  The method called on the WLB server, a diagnostic reason, and the response from WLB are returned." ();
+    ~doc:"WLB said something that the server wasn't expecting or didn't understand.  The method called on WLB, a diagnostic reason, and the response from WLB are returned." ();
   error Api_errors.wlb_xenserver_connection_refused []
-    ~doc:"The WLB server reported that XenServer refused it a connection (even though we're connecting perfectly fine in the other direction)." ();
+    ~doc:"WLB reported that the server refused it a connection (even though we're connecting perfectly fine in the other direction)." ();
   error Api_errors.wlb_xenserver_unknown_host []
-    ~doc:"The WLB server reported that its configured server name for this XenServer instance failed to resolve in DNS." ();
+    ~doc:"WLB reported that its configured server name for this server instance failed to resolve in DNS." ();
   error Api_errors.wlb_xenserver_timeout []
-    ~doc:"The WLB server reported that communication with XenServer timed out." ();
+    ~doc:"WLB reported that communication with the server timed out." ();
   error Api_errors.wlb_xenserver_authentication_failed []
-    ~doc:"The WLB server reported that XenServer rejected its configured authentication details." ();
+    ~doc:"WLB reported that the server rejected its configured authentication details." ();
   error Api_errors.wlb_xenserver_malformed_response []
-    ~doc:"The WLB server reported that XenServer said something to it that WLB wasn't expecting or didn't understand." ();
+    ~doc:"WLB reported that the server said something to it that WLB wasn't expecting or didn't understand." ();
   error Api_errors.wlb_internal_error []
-    ~doc:"The WLB server reported an internal error." ();
+    ~doc:"WLB reported an internal error." ();
   error Api_errors.wlb_connection_reset []
     ~doc:"The connection to the WLB server was reset." ();
   error Api_errors.wlb_url_invalid ["url"]
@@ -933,6 +972,8 @@ let _ =
     ~doc:"The bootloader returned an error" ();
   error Api_errors.unknown_bootloader [ "vm"; "bootloader" ]
     ~doc:"The requested bootloader is unknown" ();
+	error Api_errors.failed_to_start_emulator [ "vm"; "name"; "msg" ]
+		~doc:"An emulator required to run this VM failed to start" ();
 	error Api_errors.vm_attached_to_more_than_one_vdi_with_timeoffset_marked_as_reset_on_boot [ "vm" ]
 		~doc:"You attempted to start a VM that's attached to more than one VDI with a timeoffset marked as reset-on-boot." ();
   error Api_errors.vms_failed_to_cooperate [ ]
@@ -1015,10 +1056,6 @@ let _ =
     ~doc:"The SR is currently being used as a local cache SR." ();
   error Api_errors.clustered_sr_degraded [ "sr" ]
     ~doc:"An SR is using clustered local storage. It is not safe to reboot a host at the moment." ();
-  error Api_errors.sr_detached_on_master [ "sr"; "host" ]
-    ~doc:"The SR is currently detached on the master." ();
-  error Api_errors.sr_attached_on_slave [ "sr"; "host" ]
-    ~doc:"The SR is currently attached on non-master host." ();
 
   error Api_errors.sm_plugin_communication_failure ["sm"]
     ~doc:"The SM plugin did not respond to a query." ();
@@ -1126,7 +1163,7 @@ let _ =
   error Api_errors.patch_precheck_failed_out_of_space [ "patch"; "found_space"; "required_required"]
     ~doc:"The patch precheck stage failed: the server does not have enough space." ();
   error Api_errors.patch_precheck_tools_iso_mounted ["patch"]
-    ~doc:"XenServer Tools ISO must be ejected from all running VMs." ();
+    ~doc:"Tools ISO must be ejected from all running VMs." ();
 
   error Api_errors.cannot_find_oem_backup_partition []
     ~doc:"The backup partition to stream the updat to cannot be found" ();
@@ -1562,7 +1599,9 @@ let vm_clone = call
 	    Ref _vm, "vm", "The VM to be cloned";
 	    String, "new_name", "The name of the cloned VM"
 	  ]
-  ~errs:[Api_errors.vm_bad_power_state; Api_errors.sr_full; Api_errors.operation_not_allowed]
+  ~errs:[Api_errors.vm_bad_power_state; Api_errors.sr_full; Api_errors.operation_not_allowed
+	  ;Api_errors.license_restriction
+  ]
   ~allowed_roles:_R_VM_ADMIN
   ()
 
@@ -1579,7 +1618,7 @@ let vm_copy = call
 	    String, "new_name", "The name of the copied VM";
 	    Ref _sr, "sr", "An SR to copy all the VM's disks into (if an invalid reference then it uses the existing SRs)";
 	  ]
-  ~errs:[Api_errors.vm_bad_power_state; Api_errors.sr_full; Api_errors.operation_not_allowed]
+  ~errs:(errnames_of_call vm_clone)
   ~allowed_roles:_R_VM_ADMIN
   ()
 
@@ -1694,7 +1733,7 @@ let vm_provision = call
 	  ]
   ~in_oss_since:None
   ~in_product_since:rel_rio
-  ~errs:[Api_errors.vm_bad_power_state; Api_errors.sr_full; Api_errors.operation_not_allowed]
+  ~errs:(errnames_of_call vm_clone)
   ~allowed_roles:_R_VM_ADMIN
   ()
 
@@ -2116,7 +2155,7 @@ let csvm = call
   ~doc:"undocumented. internal use only. This call is deprecated."
   ~params:[Ref _vm, "vm", ""]
   ~result:(Ref _vm, "")
-  ~errs:[]
+  ~errs:(errnames_of_call vm_clone)
   ~hide_from_docs:true
   ~internal_deprecated_since:rel_miami
   ~allowed_roles:_R_VM_ADMIN
@@ -2272,12 +2311,12 @@ let vm_migrate_send = call
 		   Map (Ref _vif, Ref _network), "vif_map", "Map of source VIF to destination network";
            Map (String, String), "options", "Other parameters"]
   ~result:(Ref _vm, "The reference of the newly created VM in the destination pool")
-  ~errs:[Api_errors.vm_bad_power_state]
+  ~errs:[Api_errors.vm_bad_power_state; Api_errors.license_restriction]
   ~allowed_roles:_R_VM_POWER_ADMIN
   ()
 
 let vm_assert_can_migrate = call
-~name:"assert_can_migrate"
+	~name:"assert_can_migrate"
 	~in_product_since:rel_tampa
 	~doc:"Assert whether a VM can be migrated to the specified destination."
 	~params:[
@@ -2288,6 +2327,7 @@ let vm_assert_can_migrate = call
 		Map (Ref _vif, Ref _network), "vif_map", "Map of source VIF to destination network";
 		Map (String, String), "options", "Other parameters" ]
 	~allowed_roles:_R_VM_POWER_ADMIN
+	~errs:[Api_errors.license_restriction]
 	()
 
 let vm_s3_suspend = call
@@ -2431,23 +2471,13 @@ let vm_call_plugin = call
 	~allowed_roles:_R_VM_OP
 	()
 
-let vm_set_auto_update_drivers = call
-	~name:"set_auto_update_drivers"
+let vm_set_has_vendor_device = call
+	~name:"set_has_vendor_device"
 	~in_product_since:rel_dundee
-	~doc:"Enable or disable PV auto update on Windows vm"
-	~params:[Ref _vm, "self", "The vm to set auto update drivers";
-			 Bool, "value", "True if the Windows Update feature is enabled on the VM; false otherwise"]
-	~allowed_roles:_R_VM_OP
-	~doc_tags:[Windows]
-	()
-
-let vm_assert_can_set_auto_update_drivers = call
-	~name:"assert_can_set_auto_update_drivers"
-	~in_product_since:rel_dundee
-	~doc:"Check if PV auto update can be set on Windows vm"
-	~params:[Ref _vm, "self", "The vm to check if auto update drivers can be set";
-			 Bool, "value", "True if the Windows Update feature is enabled on the VM; false otherwise"]
-	~allowed_roles:_R_VM_OP
+	~doc:"Controls whether, when the VM starts in HVM mode, its virtual hardware will include the emulated PCI device for which drivers may be available through Windows Update. Usually this should never be changed on a VM on which Windows has been installed: changing it on such a VM is likely to lead to a crash on next start."
+	~params:[Ref _vm, "self", "The VM on which to set this flag";
+			 Bool, "value", "True to provide the vendor PCI device."]
+	~allowed_roles:_R_VM_ADMIN
 	~doc_tags:[Windows]
 	()
 
@@ -3361,6 +3391,7 @@ let create_obj ?lifecycle ~in_oss_since ?in_product_since ?(internal_deprecated_
 	?(implicit_messages_allowed_roles=_R_ALL) (* used in implicit obj msgs (get_all, etc) *)
 	?force_custom_actions:(force_custom_actions=None) (* None,Some(RW),Some(StaticRO) *)
 	~messages_default_allowed_roles ?(doc_tags=[])(* used in constructor, destructor and explicit obj msgs *)
+	?(msg_lifecycles = [])(* To specify lifecycle for automatic messages (e.g. constructor) when different to object lifecycle. *)
 	() =
 	let contents_default_writer_roles = if contents_default_writer_roles=None then messages_default_allowed_roles else contents_default_writer_roles in
 	let get_field_reader_roles = function None->contents_default_reader_roles|r->r in
@@ -3397,7 +3428,8 @@ let create_obj ?lifecycle ~in_oss_since ?in_product_since ?(internal_deprecated_
 	in
 	let msgs = List.map (fun m -> {m with msg_obj_name=name;msg_allowed_roles=get_msg_allowed_roles m.msg_allowed_roles}) messages in
 	{ name = name; description = descr; obj_lifecycle = lifecycle; messages = msgs; contents = contents;
-		doccomments = doccomments; gen_constructor_destructor = gen_constructor_destructor; force_custom_actions = force_custom_actions;
+		doccomments = doccomments; msg_lifecycles = msg_lifecycles;
+		gen_constructor_destructor = gen_constructor_destructor; force_custom_actions = force_custom_actions;
 		persist = persist; gen_events = gen_events; obj_release = release;
 		in_database=in_db; obj_allowed_roles = messages_default_allowed_roles; obj_implicit_msg_allowed_roles = implicit_messages_allowed_roles;
 		obj_doc_tags = doc_tags;
@@ -3984,7 +4016,7 @@ let host_patch =
 
 let host_bugreport_upload = call
   ~name:"bugreport_upload"
-  ~doc:"Run xen-bugtool --yestoall and upload the output to Citrix support"
+  ~doc:"Run xen-bugtool --yestoall and upload the output to support"
   ~in_oss_since:None
   ~in_product_since:rel_rio
   ~params:[ Ref _host, "host", "The host on which to run xen-bugtool";
@@ -4017,6 +4049,32 @@ let host_license_apply = call
   ~allowed_roles:_R_POOL_OP
   ()
 
+let host_license_add = call
+  ~name:"license_add"
+  ~in_oss_since:None
+  ~lifecycle:[
+    Published, rel_indigo, "Functionality for parsing license files re-added";
+  ]
+  ~params:[Ref _host, "host", "The host to upload the license to";
+	   String, "contents", "The contents of the license file, base64 encoded"]
+  ~doc:"Apply a new license to a host"
+  ~errs: [Api_errors.license_processing_error]
+  ~allowed_roles:_R_POOL_OP
+  ()
+
+let host_license_remove = call
+	~name:"license_remove"
+	~in_oss_since:None
+	~lifecycle:[
+		Published, rel_indigo, "";
+	]
+	~params:[
+		Ref _host, "host", "The host from which any license will be removed"
+	]
+	~doc:"Remove any license file from the specified host, and switch that host to the unlicensed edition"
+	~allowed_roles:_R_POOL_OP
+	()
+
 let host_create_params =
   [
     {param_type=String; param_name="uuid"; param_doc="unique identifier/object reference"; param_release=rio_release; param_default=None};
@@ -4028,10 +4086,11 @@ let host_create_params =
     {param_type=String; param_name="external_auth_service_name"; param_doc="name of external authentication service configured; empty if none configured"; param_release=george_release; param_default=Some(VString "")};
     {param_type=Map(String,String); param_name="external_auth_configuration"; param_doc="configuration specific to external authentication service"; param_release=george_release; param_default=Some(VMap [])};
     {param_type=Map(String,String); param_name="license_params"; param_doc="State of the current license"; param_release=midnight_ride_release; param_default=Some(VMap [])};
-    {param_type=String; param_name="edition"; param_doc="XenServer edition"; param_release=midnight_ride_release; param_default=Some(VString "")};
+    {param_type=String; param_name="edition"; param_doc="Product edition"; param_release=midnight_ride_release; param_default=Some(VString "")};
     {param_type=Map(String,String); param_name="license_server"; param_doc="Contact information of the license server"; param_release=midnight_ride_release; param_default=Some(VMap [VString "address", VString "localhost"; VString "port", VString "27000"])};
     {param_type=Ref _sr; param_name="local_cache_sr"; param_doc="The SR that is used as a local cache"; param_release=cowley_release; param_default=(Some (VRef (Ref.string_of Ref.null)))};
     {param_type=Map(String,String); param_name="chipset_info"; param_doc="Information about chipset features"; param_release=boston_release; param_default=Some(VMap [])};
+    {param_type=Bool; param_name="ssl_legacy"; param_doc="Allow SSLv3 protocol and ciphersuites as used by older XenServers. This controls both incoming and outgoing connections."; param_release=dundee_release; param_default=Some (VBool true)};
   ]
 
 let host_create = call
@@ -4335,6 +4394,7 @@ let host_set_cpu_features = call ~flags:[`Session]
     String, "features", "The features string (32 hexadecimal digits)"
   ]
   ~allowed_roles:_R_POOL_OP
+  ~lifecycle:[Published, rel_midnight_ride, ""; Removed, rel_dundee, "Manual CPU feature setting was removed"]
   ()
   
 let host_reset_cpu_features = call ~flags:[`Session]
@@ -4345,6 +4405,7 @@ let host_reset_cpu_features = call ~flags:[`Session]
     Ref _host, "host", "The host"
   ]
   ~allowed_roles:_R_POOL_OP
+  ~lifecycle:[Published, rel_midnight_ride, ""; Removed, rel_dundee, "Manual CPU feature setting was removed"]
   ()
 
 let host_reset_networking = call
@@ -4489,7 +4550,7 @@ let host =
     create_obj ~in_db:true ~in_product_since:rel_rio ~in_oss_since:oss_since_303 ~internal_deprecated_since:None ~persist:PersistEverything ~gen_constructor_destructor:false ~name:_host ~descr:"A physical host" ~gen_events:true
       ~doccomments:[]
       ~messages_default_allowed_roles:_R_POOL_OP
-      ~messages: [host_disable; host_enable; host_shutdown; host_reboot; host_dmesg; host_dmesg_clear; host_get_log; host_send_debug_keys; host_bugreport_upload; host_list_methods; host_license_apply; host_create; host_destroy; 
+      ~messages: [host_disable; host_enable; host_shutdown; host_reboot; host_dmesg; host_dmesg_clear; host_get_log; host_send_debug_keys; host_bugreport_upload; host_list_methods; host_license_apply; host_license_add; host_license_remove; host_create; host_destroy; 
 		  host_power_on;
 		 host_set_license_params;
 		 host_emergency_ha_disable;
@@ -4608,7 +4669,7 @@ let host =
 	field ~qualifier:DynamicRO ~in_product_since:rel_george ~default_value:(Some (VString "")) ~ty:String "external_auth_type" "type of external authentication service configured; empty if none configured.";
 	field ~qualifier:DynamicRO ~in_product_since:rel_george ~default_value:(Some (VString "")) ~ty:String "external_auth_service_name" "name of external authentication service configured; empty if none configured.";
 	field ~qualifier:DynamicRO ~in_product_since:rel_george ~default_value:(Some (VMap [])) ~ty:(Map (String,String)) "external_auth_configuration" "configuration specific to external authentication service";
-	field ~qualifier:DynamicRO ~in_product_since:rel_midnight_ride ~default_value:(Some (VString "")) ~ty:String "edition" "XenServer edition";
+	field ~qualifier:DynamicRO ~in_product_since:rel_midnight_ride ~default_value:(Some (VString "")) ~ty:String "edition" "Product edition";
 	field ~qualifier:RW ~in_product_since:rel_midnight_ride ~default_value:(Some (VMap [VString "address", VString "localhost"; VString "port", VString "27000"])) ~ty:(Map (String, String)) "license_server" "Contact information of the license server";
     field ~qualifier:DynamicRO ~in_product_since:rel_midnight_ride ~default_value:(Some (VMap [])) ~ty:(Map (String,String)) "bios_strings" "BIOS strings";
 	field ~qualifier:DynamicRO ~in_product_since:rel_midnight_ride ~default_value:(Some (VString "")) ~ty:String "power_on_mode" "The power on mode";  
@@ -4618,10 +4679,11 @@ let host =
 		"chipset_info" "Information about chipset features";
 	field ~qualifier:DynamicRO ~lifecycle:[Published, rel_boston, ""] ~ty:(Set (Ref _pci)) "PCIs" "List of PCI devices in the host";
 	field ~qualifier:DynamicRO ~lifecycle:[Published, rel_boston, ""] ~ty:(Set (Ref _pgpu)) "PGPUs" "List of physical GPUs in the host";
-	field ~qualifier:DynamicRO ~lifecycle:[Published, rel_dundee, ""] ~ty:Bool ~default_value:(Some (VBool true)) "ssl_legacy" "Allow SSLv3 protocol and ciphersuites as used by older XenServers. This controls both incoming and outgoing connections. When this is set to a different value, the host immediately restarts its SSL/TLS listening service; typically this takes less than a second but existing connections to it will be broken. XenAPI login sessions will remain valid.";
+	field ~qualifier:StaticRO ~lifecycle:[Published, rel_dundee, ""] ~ty:Bool ~default_value:(Some (VBool true)) "ssl_legacy" "Allow SSLv3 protocol and ciphersuites as used by older XenServers. This controls both incoming and outgoing connections. When this is set to a different value, the host immediately restarts its SSL/TLS listening service; typically this takes less than a second but existing connections to it will be broken. XenAPI login sessions will remain valid.";
 	field ~qualifier:RW ~in_product_since:rel_tampa ~default_value:(Some (VMap [])) ~ty:(Map (String, String)) "guest_VCPUs_params" "VCPUs params to apply to all resident guests";
 	field ~qualifier:RW ~in_product_since:rel_cream ~default_value:(Some (VEnum "enabled")) ~ty:host_display "display" "indicates whether the host is configured to output its console to a physical display device";
 	field ~qualifier:DynamicRO ~in_product_since:rel_cream ~default_value:(Some (VSet [VInt 0L])) ~ty:(Set (Int)) "virtual_hardware_platform_versions" "The set of versions of the virtual hardware platform that the host can offer to its guests";
+	field ~qualifier:DynamicRO ~default_value:(Some (VRef (Ref.string_of Ref.null))) ~in_product_since:rel_dundee_plus ~ty:(Ref _vm) "control_domain" "The control domain (domain 0)";
  ])
 	()
 
@@ -5248,6 +5310,16 @@ let device_status_fields =
 
 (* VIF messages *)
 
+let vif_ipv4_configuration_mode = Enum ("vif_ipv4_configuration_mode", [
+	"None", "Follow the default IPv4 configuration of the guest (this is guest-dependent)";
+	"Static", "Static IPv4 address configuration";
+])
+
+let vif_ipv6_configuration_mode = Enum ("vif_ipv6_configuration_mode", [
+	"None", "Follow the default IPv6 configuration of the guest (this is guest-dependent)";
+	"Static", "Static IPv6 address configuration";
+])
+
 let vif_plug = call
   ~name:"plug"
   ~in_product_since:rel_rio
@@ -5364,6 +5436,32 @@ let vif_remove_ipv6_allowed = call
 	~allowed_roles:_R_POOL_OP
 	()
 
+let vif_configure_ipv4 = call
+	~name:"configure_ipv4"
+	~in_product_since:rel_dundee
+	~doc:"Configure IPv4 settings for this virtual interface"
+	~versioned_params:[
+		{param_type=Ref _vif; param_name="self"; param_doc="The VIF to configure"; param_release=dundee_release; param_default=None};
+		{param_type=vif_ipv4_configuration_mode; param_name="mode"; param_doc="Whether to use static or no IPv4 assignment"; param_release=dundee_release; param_default=None};
+		{param_type=String; param_name="address"; param_doc="The IPv4 address in <addr>/<prefix length> format (for static mode only)"; param_release=dundee_release; param_default=Some(VString "")};
+		{param_type=String; param_name="gateway"; param_doc="The IPv4 gateway (for static mode only; leave empty to not set a gateway)"; param_release=dundee_release; param_default=Some(VString "")}
+	]
+	~allowed_roles:_R_VM_OP
+	()
+
+let vif_configure_ipv6 = call
+	~name:"configure_ipv6"
+	~in_product_since:rel_dundee
+	~doc:"Configure IPv6 settings for this virtual interface"
+	~versioned_params:[
+		{param_type=Ref _vif; param_name="self"; param_doc="The VIF to configure"; param_release=dundee_release; param_default=None};
+		{param_type=vif_ipv6_configuration_mode; param_name="mode"; param_doc="Whether to use static or no IPv6 assignment"; param_release=dundee_release; param_default=None};
+		{param_type=String; param_name="address"; param_doc="The IPv6 address in <addr>/<prefix length> format (for static mode only)"; param_release=dundee_release; param_default=Some(VString "")};
+		{param_type=String; param_name="gateway"; param_doc="The IPv6 gateway (for static mode only; leave empty to not set a gateway)"; param_release=dundee_release; param_default=Some(VString "")}
+	]
+	~allowed_roles:_R_VM_OP
+	()
+
 (** A virtual network interface *)
 let vif =
     create_obj ~in_db:true ~in_product_since:rel_rio ~in_oss_since:oss_since_303 ~internal_deprecated_since:None ~persist:PersistEverything ~gen_constructor_destructor:true ~name:_vif ~descr:"A virtual network interface"
@@ -5372,7 +5470,8 @@ let vif =
       ~messages_default_allowed_roles:_R_VM_ADMIN
       ~doc_tags:[Networking]
       ~messages:[vif_plug; vif_unplug; vif_unplug_force; vif_set_locking_mode;
-        vif_set_ipv4_allowed; vif_add_ipv4_allowed; vif_remove_ipv4_allowed; vif_set_ipv6_allowed; vif_add_ipv6_allowed; vif_remove_ipv6_allowed]
+        vif_set_ipv4_allowed; vif_add_ipv4_allowed; vif_remove_ipv4_allowed; vif_set_ipv6_allowed; vif_add_ipv6_allowed; vif_remove_ipv6_allowed; 
+	vif_configure_ipv4; vif_configure_ipv6]
       ~contents:
       ([ uid _vif;
        ] @ (allowed_and_current_operations vif_operations) @ [
@@ -5390,6 +5489,12 @@ let vif =
 		 field ~qualifier:StaticRO ~in_product_since:rel_tampa ~default_value:(Some (VEnum "network_default")) ~ty:vif_locking_mode "locking_mode" "current locking mode of the VIF";
 		 field ~qualifier:StaticRO ~in_product_since:rel_tampa ~default_value:(Some (VSet [])) ~ty:(Set (String)) "ipv4_allowed" "A list of IPv4 addresses which can be used to filter traffic passing through this VIF";
 		 field ~qualifier:StaticRO ~in_product_since:rel_tampa ~default_value:(Some (VSet [])) ~ty:(Set (String)) "ipv6_allowed" "A list of IPv6 addresses which can be used to filter traffic passing through this VIF";
+		 field ~ty:vif_ipv4_configuration_mode ~in_product_since:rel_dundee ~qualifier:DynamicRO "ipv4_configuration_mode" "Determines whether IPv4 addresses are configured on the VIF" ~default_value:(Some (VEnum "None"));
+		 field ~ty:(Set (String)) ~in_product_since:rel_dundee ~qualifier:DynamicRO "ipv4_addresses" "IPv4 addresses in CIDR format" ~default_value:(Some (VSet []));
+	 	 field ~ty:String ~in_product_since:rel_dundee ~qualifier:DynamicRO "ipv4_gateway" "IPv4 gateway (the empty string means that no gateway is set)" ~default_value:(Some (VString ""));
+		 field ~ty:vif_ipv6_configuration_mode ~in_product_since:rel_dundee ~qualifier:DynamicRO "ipv6_configuration_mode" "Determines whether IPv6 addresses are configured on the VIF" ~default_value:(Some (VEnum "None"));
+		 field ~ty:(Set (String)) ~in_product_since:rel_dundee ~qualifier:DynamicRO "ipv6_addresses" "IPv6 addresses in CIDR format" ~default_value:(Some (VSet []));
+		 field ~ty:String ~in_product_since:rel_dundee ~qualifier:DynamicRO "ipv6_gateway" "IPv6 gateway (the empty string means that no gateway is set)" ~default_value:(Some (VString ""));
 	 ])
 	()
 
@@ -5437,6 +5542,7 @@ let storage_operations =
 	  "vdi_resize", "Resizing a VDI"; 
 	  "vdi_clone", "Cloneing a VDI"; 
 	  "vdi_snapshot", "Snapshotting a VDI";
+	  "vdi_mirror", "Mirroring a VDI";
 	  "pbd_create", "Creating a PBD for this SR";
 	  "pbd_destroy", "Destroying one of this SR's PBDs"; ])
 
@@ -5558,6 +5664,7 @@ let storage_repository =
 	field ~qualifier:DynamicRO ~in_product_since:rel_cowley ~ty:Bool ~default_value:(Some (VBool false)) "local_cache_enabled" "True if this SR is assigned to be the local cache for its host";
 	field ~qualifier:DynamicRO ~in_product_since:rel_boston ~ty:(Ref _dr_task) ~default_value:(Some (VRef (Ref.string_of Ref.null))) "introduced_by" "The disaster recovery task which introduced this SR";
 	field ~qualifier:DynamicRO ~lifecycle:[Published, rel_dundee, ""] ~ty:Bool ~default_value:(Some (VBool false)) "clustered" "True if the SR is using aggregated local storage";
+	field ~qualifier:DynamicRO ~lifecycle:[Published, rel_dundee, ""] ~ty:Bool ~default_value:(Some (VBool false)) "is_tools_sr" "True if this is the SR that contains the Tools ISO VDIs";
       ])
 	()
 
@@ -5745,6 +5852,7 @@ let vdi_operations =
 	  "resize", "Resizing the VDI";
 	  "resize_online", "Resizing the VDI which may or may not be online";
 	  "snapshot", "Snapshotting the VDI";
+	  "mirror", "Mirroring the VDI";
 	  "destroy", "Destroying the VDI";
 	  "forget", "Forget about the VDI";
 	  "update", "Refreshing the fields of the VDI";
@@ -6019,6 +6127,7 @@ let vdi =
 	field ~in_product_since:rel_cowley ~qualifier:DynamicRO ~ty:on_boot ~default_value:(Some (VEnum "persist")) "on_boot" "The behaviour of this VDI on a VM boot";
 	field ~in_product_since:rel_boston ~qualifier:DynamicRO ~ty:(Ref _pool) ~default_value:(Some (VRef (Ref.string_of Ref.null))) "metadata_of_pool" "The pool whose metadata is contained in this VDI";
 	field ~in_product_since:rel_boston ~qualifier:DynamicRO ~ty:Bool ~default_value:(Some (VBool false)) "metadata_latest" "Whether this VDI contains the latest known accessible metadata for the pool";
+	field ~lifecycle:[Published, rel_dundee, ""] ~qualifier:DynamicRO ~ty:Bool ~default_value:(Some (VBool false)) "is_tools_iso" "Whether this VDI is a Tools ISO";
       ])
 	()
 
@@ -6813,6 +6922,8 @@ let pool =
 			; field ~in_oss_since:None ~in_product_since:rel_dundee ~qualifier:DynamicRO ~default_value:(Some (VString "")) ~ty:String "ha_cluster_stack" "The HA cluster stack that is currently in use. Only valid when HA is enabled."
 			] @ (allowed_and_current_operations pool_operations) @
 			[ field ~in_oss_since:None ~in_product_since:rel_dundee ~qualifier:DynamicRO ~ty:(Map(String, String)) ~default_value:(Some (VMap [])) "guest_agent_config" "Pool-wide guest agent configuration information"
+			; field ~qualifier:DynamicRO ~in_product_since:rel_dundee ~default_value:(Some (VMap [])) ~ty:(Map(String, String)) "cpu_info" "Details about the physical CPUs on the pool"
+			; field ~qualifier:RW ~in_product_since:rel_dundee ~default_value:(Some (VBool false)) ~ty:Bool "policy_no_vendor_device" "The pool-wide policy for clients on whether to use the vendor device or not on newly created VMs. This field will also be consulted if the 'has_vendor_device' field is not specified in the VM.create call."
 			])
 		()
 
@@ -7133,7 +7244,12 @@ let vm_operations =
 let vm =
     create_obj ~in_db:true ~in_product_since:rel_rio ~in_oss_since:oss_since_303 ~internal_deprecated_since:None ~persist:PersistEverything ~gen_constructor_destructor:true ~name:_vm ~descr:"A virtual machine (or 'guest')."
       ~gen_events:true
-      ~doccomments:[ "destroy", "Destroy the specified VM.  The VM is completely removed from the system.  This function can only be called when the VM is in the Halted State." ]
+      ~doccomments:[ "destroy", "Destroy the specified VM.  The VM is completely removed from the system.  This function can only be called when the VM is in the Halted State.";
+        "create", "NOT RECOMMENDED! VM.clone or VM.copy (or VM.import) is a better choice in almost all situations. The standard way to obtain a new VM is to call VM.clone on a template VM, then call VM.provision on the new clone. Caution: if VM.create is used and then the new VM is attached to a virtual disc that has an operating system already installed, then there is no guarantee that the operating system will boot and run. Any software that calls VM.create on a future version of this API may fail or give unexpected results. For example this could happen if an additional parameter were added to VM.create. VM.create is intended only for use in the automatic creation of the system VM templates. It creates a new VM instance, and returns its handle.";
+      ]
+      ~lifecycle:[
+        Published, rel_rio, "";
+      ]
       ~messages_default_allowed_roles:_R_VM_ADMIN
       ~messages:[ vm_snapshot; vm_snapshot_with_quiesce; vm_clone; vm_copy; vm_revert; vm_checkpoint;
 		vm_provision; vm_start; vm_start_on; vm_pause; vm_unpause; vm_cleanShutdown;vm_shutdown;
@@ -7192,8 +7308,7 @@ let vm =
 		vm_set_appliance;
 		vm_query_services;
 		vm_call_plugin;
-		vm_set_auto_update_drivers;
-		vm_assert_can_set_auto_update_drivers;
+		vm_set_has_vendor_device;
 		vm_import;
 		]
       ~contents:
@@ -7208,7 +7323,7 @@ let vm =
 
 	field ~writer_roles:_R_VM_POWER_ADMIN ~qualifier:DynamicRO ~ty:(Ref _host) "resident_on" "the host the VM is currently resident on";
 	field ~writer_roles:_R_VM_POWER_ADMIN ~in_oss_since:None ~internal_only:true ~qualifier:DynamicRO ~ty:(Ref _host) "scheduled_to_be_resident_on" "the host on which the VM is due to be started/resumed/migrated. This acts as a memory reservation indicator";
-	field ~writer_roles:_R_VM_POWER_ADMIN ~in_oss_since:None ~ty:(Ref _host) "affinity" "a host which the VM has some affinity for (or NULL). This is used as a hint to the start call when it decides where to run the VM. Implementations are free to ignore this field.";
+	field ~writer_roles:_R_VM_POWER_ADMIN ~in_oss_since:None ~ty:(Ref _host) "affinity" "A host which the VM has some affinity for (or NULL). This is used as a hint to the start call when it decides where to run the VM. Resource constraints may cause the VM to be started elsewhere.";
 
 	namespace ~name:"memory" ~contents:guest_memory ();
 	namespace ~name:"VCPUs" ~contents:vcpus ();
@@ -7271,8 +7386,13 @@ let vm =
 	field ~qualifier:StaticRO ~in_product_since:rel_boston ~default_value:(Some (VInt 0L)) ~ty:Int "version" "The number of times this VM has been recovered";
 	field ~qualifier:StaticRO ~in_product_since:rel_clearwater ~default_value:(Some (VString "0:0")) ~ty:(String) "generation_id" "Generation ID of the VM";
 	field ~writer_roles:_R_VM_ADMIN ~qualifier:RW ~in_product_since:rel_cream ~default_value:(Some (VInt 0L)) ~ty:Int "hardware_platform_version" "The host virtual hardware platform version the VM can run on";
-	field ~qualifier:StaticRO ~lifecycle:[Prototyped, rel_dundee, "Experimental"] ~doc_tags:[Windows] ~default_value:(Some (VBool false)) ~ty:Bool "auto_update_drivers" "Does nothing at present. To be removed before Dundee release, once other code no longer refers to it.";
-	field ~qualifier:RW ~lifecycle:[Prototyped, rel_dundee, "Initial definition of field so other code can refer to it."] ~doc_tags:[Windows] ~default_value:(Some (VBool true)) ~ty:Bool "has_vendor_device" "Does nothing at present. Intended to replace auto_update_drivers to control the presence of the C000 PCI device.";
+ field ~qualifier:StaticRO ~lifecycle:[Published, rel_dundee, ""] ~doc_tags:[Windows] ~default_value:(Some (VCustom (String.concat "\n" [
+     "(try Rpc.Bool (";
+     "let pool = List.hd (Db_actions.DB_Action.Pool.get_all ~__context) in";
+     "let restrictions = Db_actions.DB_Action.Pool.get_restrictions ~__context ~self:pool in ";
+     "let vendor_device_allowed = try List.assoc \"restrict_pci_device_for_auto_update\" restrictions = \"false\" with _ -> false in";
+     "let policy_says_its_ok = not (Db_actions.DB_Action.Pool.get_policy_no_vendor_device ~__context ~self:pool) in";
+     "vendor_device_allowed && policy_says_its_ok) with e -> D.error \"Failure when defaulting has_vendor_device field: %s\" (Printexc.to_string e); Rpc.Bool false)"], VBool false))) ~ty:Bool "has_vendor_device" "When an HVM guest starts, this controls the presence of the emulated C000 PCI device which triggers Windows Update to fetch or update PV drivers.";
     ])
 	()
 
@@ -7307,6 +7427,13 @@ let vm_metrics =
       ]
 	()
 
+let tristate_type = Enum ("tristate_type",
+[
+	"yes", "Known to be true";
+	"no", "Known to be false";
+	"unspecified", "Unknown or unspecified";
+])
+
 (* Some of this stuff needs to persist (like PV drivers vsns etc.) so we know about what's likely to be in the VM even when it's off.
    Other things don't need to persist, so we specify these on a per-field basis *)
 let vm_guest_metrics =
@@ -7322,19 +7449,9 @@ let vm_guest_metrics =
       field ~qualifier:DynamicRO ~ty:Bool ~in_oss_since:None
         ~lifecycle:[
           Published, rel_rio, "true if the PV drivers appear to be up to date";
-          Deprecated, rel_dundee, "Deprecated in favour of network_paths_optimized and storage_paths_optimized, and redefined in terms of them"
+          Deprecated, rel_dundee, "Deprecated in favour of PV_drivers_detected, and redefined in terms of it"
         ]
-      "PV_drivers_up_to_date" "Logical AND of network_paths_optimized and storage_paths_optimized";
-      field ~qualifier:DynamicRO ~ty:Bool ~in_oss_since:None ~default_value:(Some (VBool false))
-        ~lifecycle:[
-          Published, rel_dundee, "Network paths are optimized with backend";
-        ]
-      "network_paths_optimized" "True if the network paths are optimized with PV driver";
-      field ~qualifier:DynamicRO ~ty:Bool ~in_oss_since:None ~default_value:(Some (VBool false))
-        ~lifecycle:[
-          Published, rel_dundee, "Storage paths are optimized with backend";
-        ]
-      "storage_paths_optimized" "True if the storage paths are optimized with PV driver";
+      "PV_drivers_up_to_date" "Logically equivalent to PV_drivers_detected";
       field ~qualifier:DynamicRO ~ty:(Map(String, String))
         ~lifecycle:[
           Published, rel_rio, "free/used/total";
@@ -7352,6 +7469,9 @@ let vm_guest_metrics =
       field ~qualifier:DynamicRO ~ty:DateTime "last_updated" "Time at which this information was last updated";
       field ~in_product_since:rel_orlando ~default_value:(Some (VMap [])) ~ty:(Map(String, String)) "other_config" "additional configuration";
       field ~qualifier:DynamicRO ~in_product_since:rel_orlando ~default_value:(Some (VBool false)) ~ty:Bool "live" "True if the guest is sending heartbeat messages via the guest agent";
+      field ~qualifier:DynamicRO ~lifecycle:[Published, rel_dundee, "To be used where relevant and available instead of checking PV driver version."] ~ty:tristate_type ~default_value:(Some (VEnum "unspecified")) "can_use_hotplug_vbd" "The guest's statement of whether it supports VBD hotplug, i.e. whether it is capable of responding immediately to instantiation of a new VBD by bringing online a new PV block device. If the guest states that it is not capable, then the VBD plug and unplug operations will not be allowed while the guest is running.";
+      field ~qualifier:DynamicRO ~lifecycle:[Published, rel_dundee, "To be used where relevant and available instead of checking PV driver version."] ~ty:tristate_type ~default_value:(Some (VEnum "unspecified")) "can_use_hotplug_vif" "The guest's statement of whether it supports VIF hotplug, i.e. whether it is capable of responding immediately to instantiation of a new VIF by bringing online a new PV network device. If the guest states that it is not capable, then the VIF plug and unplug operations will not be allowed while the guest is running.";
+      field ~qualifier:DynamicRO ~lifecycle:[Published, rel_dundee, ""] ~ty:Bool ~default_value:(Some (VBool false)) "PV_drivers_detected" "At least one of the guest's devices has successfully connected to the backend.";
     ]
     ()
 
@@ -7670,13 +7790,13 @@ let vmpp =
       field ~lifecycle:vmpr_removed ~qualifier:RW ~ty:vmpp_backup_type "backup_type" "type of the backup sub-policy" ~default_value:(Some (VEnum "snapshot"));
       field ~lifecycle:vmpr_removed ~qualifier:StaticRO ~ty:Int "backup_retention_value" "maximum number of backups that should be stored at any time" ~default_value:(Some (VInt 7L));
       field ~lifecycle:vmpr_removed ~qualifier:StaticRO ~ty:vmpp_backup_frequency "backup_frequency" "frequency of the backup schedule" ~default_value:(Some (VEnum "daily"));
-      field ~lifecycle:vmpr_removed ~qualifier:StaticRO ~ty:(Map (String,String)) "backup_schedule" "schedule of the backup containing 'hour', 'min', 'days'. Date/time-related information is in XenServer Local Timezone" ~default_value:(Some (VMap []));
+      field ~lifecycle:vmpr_removed ~qualifier:StaticRO ~ty:(Map (String,String)) "backup_schedule" "schedule of the backup containing 'hour', 'min', 'days'. Date/time-related information is in Local Timezone" ~default_value:(Some (VMap []));
       field ~lifecycle:vmpr_removed ~qualifier:DynamicRO ~ty:Bool "is_backup_running" "true if this protection policy's backup is running";
       field ~lifecycle:vmpr_removed ~qualifier:DynamicRO ~ty:DateTime "backup_last_run_time" "time of the last backup" ~default_value:(Some(VDateTime(Date.of_float 0.)));
       field ~lifecycle:vmpr_removed ~qualifier:StaticRO ~ty:vmpp_archive_target_type "archive_target_type" "type of the archive target config" ~default_value:(Some (VEnum "none"));
       field ~lifecycle:vmpr_removed ~qualifier:StaticRO ~ty:(Map (String,String)) "archive_target_config" "configuration for the archive, including its 'location', 'username', 'password'" ~default_value:(Some (VMap []));
       field ~lifecycle:vmpr_removed ~qualifier:StaticRO ~ty:vmpp_archive_frequency "archive_frequency" "frequency of the archive schedule" ~default_value:(Some (VEnum "never"));
-      field ~lifecycle:vmpr_removed ~qualifier:StaticRO ~ty:(Map (String,String)) "archive_schedule" "schedule of the archive containing 'hour', 'min', 'days'. Date/time-related information is in XenServer Local Timezone" ~default_value:(Some (VMap []));
+      field ~lifecycle:vmpr_removed ~qualifier:StaticRO ~ty:(Map (String,String)) "archive_schedule" "schedule of the archive containing 'hour', 'min', 'days'. Date/time-related information is in Local Timezone" ~default_value:(Some (VMap []));
       field ~lifecycle:vmpr_removed ~qualifier:DynamicRO ~ty:Bool "is_archive_running" "true if this protection policy's archive is running";
       field ~lifecycle:vmpr_removed ~qualifier:DynamicRO ~ty:DateTime "archive_last_run_time" "time of the last archive" ~default_value:(Some(VDateTime(Date.of_float 0.)));
       field ~lifecycle:vmpr_removed ~qualifier:DynamicRO ~ty:(Set (Ref _vm)) "VMs" "all VMs attached to this protection policy";
@@ -7897,6 +8017,7 @@ let event =
     description = "Asynchronous event registration and handling";
     gen_constructor_destructor = false;
     doccomments = [];
+    msg_lifecycles = [];
     messages = [ register; unregister; next; from; get_current_id; inject ];
     obj_release = {internal=get_product_releases rel_rio; opensource=get_oss_releases (Some "3.0.3"); internal_deprecated_since=None};
     contents = [

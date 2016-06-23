@@ -51,14 +51,13 @@ BuildRequires: python2-devel
 BuildRequires: ocaml-rrdd-plugin-devel
 BuildRequires: ocaml-pci-devel >= 0.2.0
 BuildRequires: xen-ocaml-devel
+BuildRequires: xapi-test-utils-devel
 Requires: hwdata
 Requires: ocaml-xcp-inventory
 Requires: redhat-lsb-core
 Requires: stunnel
 Requires: vhd-tool
 Requires: libffi
-
-
 
 %description
 XCP toolstack.
@@ -67,6 +66,9 @@ XCP toolstack.
 Summary: The xapi toolstack
 Group: System/Hypervisor
 Requires: busybox m2crypto net-tools
+Requires(post): /sbin/chkconfig
+Requires(preun): /sbin/chkconfig
+Requires(preun): /sbin/service
 Requires(post): systemd
 Requires(preun): systemd
 Requires(postun): systemd
@@ -89,14 +91,6 @@ Requires: net-tools
 
 %description tests
 This package contains a series of simple regression tests.
-
-%package v6d
-Summary: The editions and features daemon
-Group: System/Hypervisor
-
-%description v6d
-This package contains daemon that defines and controls XCP editions and
-associated features
 
 %package client-devel
 Summary: xapi Development Headers and Libraries
@@ -162,31 +156,64 @@ mkdir $RPM_BUILD_ROOT/etc/xapi.conf.d
 rm -rf $RPM_BUILD_ROOT
 
 %post core
-[ ! -x /sbin/chkconfig ] || chkconfig --add save-boot-info
-[ ! -x /sbin/chkconfig ] || chkconfig --add attach-static-vdis
-[ ! -x /sbin/chkconfig ] || chkconfig --add xapi
-[ ! -x /sbin/chkconfig ] || chkconfig --add xapi-domains
-[ ! -x /sbin/chkconfig ] || chkconfig --add perfmon
-[ ! -x /sbin/chkconfig ] || chkconfig --add genptoken
+case $1 in
+  1) # install
+    /sbin/chkconfig --add save-boot-info
+    /sbin/chkconfig --add attach-static-vdis
+    /sbin/chkconfig --add xapi
+    /sbin/chkconfig --add xapi-domains
+    /sbin/chkconfig --add perfmon
+    /sbin/chkconfig --add genptoken
+    ;;
+  2) # upgrade
+    /sbin/chkconfig --del save-boot-info
+    /sbin/chkconfig --del attach-static-vdis
+    /sbin/chkconfig --del xapi
+    /sbin/chkconfig --del xapi-domains
+    /sbin/chkconfig --del perfmon
+    /sbin/chkconfig --del genptoken
+    /sbin/chkconfig --add save-boot-info
+    /sbin/chkconfig --add attach-static-vdis
+    /sbin/chkconfig --add xapi
+    /sbin/chkconfig --add xapi-domains
+    /sbin/chkconfig --add perfmon
+    /sbin/chkconfig --add genptoken
+    ;;
+esac
 %systemd_post cdrommon@.service
 
 %preun core
+case $1 in
+  0) # uninstall
+    /sbin/service message-switch stop >/dev/null 2>&1 || :
+    /sbin/service save-boot-info stop >/dev/null 2>&1 || :
+    /sbin/service attach-static-vdis >/dev/null 2>&1 || :
+    /sbin/service xapi >/dev/null 2>&1 || :
+    /sbin/service xapi-domains >/dev/null 2>&1 || :
+    /sbin/service perfmon >/dev/null 2>&1 || :
+    /sbin/service genptoken >/dev/null 2>&1 || :
+    /sbin/chkconfig --del save-boot-info
+    /sbin/chkconfig --del attach-static-vdis
+    /sbin/chkconfig --del xapi
+    /sbin/chkconfig --del xapi-domains
+    /sbin/chkconfig --del perfmon
+    /sbin/chkconfig --del genptoken
+    ;;
+  1) # upgrade
+    ;;
+esac
 %systemd_preun cdrommon@.service
 
 %postun core
 %systemd_postun_with_restart cdrommon@.service
-
-%post v6d
-[ ! -x /sbin/chkconfig ] || chkconfig --add v6d
 
 %files core -f core-files
 %defattr(-,root,root,-)
 @OPTDIR@/bin/xapi
 %config(noreplace) /etc/xapi.conf
 /etc/logrotate.d/audit
-/etc/logrotate.d/v6d
-/etc/logrotate.d/xapi
 /etc/pam.d/xapi
+/etc/cron.d/xapi-logrotate.cron
 /etc/cron.daily/license-check
 /etc/rc.d/init.d/management-interface
 /etc/rc.d/init.d/perfmon
@@ -222,6 +249,7 @@ rm -rf $RPM_BUILD_ROOT
 /etc/xapi.d/plugins/install-supp-pack
 /etc/xapi.d/plugins/disk-space
 /etc/xapi.d/extensions
+%config(noreplace) /etc/xensource/xapi-logrotate.conf
 %config(noreplace) /etc/xensource/db.conf
 %config(noreplace) /etc/xensource/db.conf.rio
 /etc/xensource/master.d/01-example
@@ -279,6 +307,7 @@ rm -rf $RPM_BUILD_ROOT
 @OPTDIR@/libexec/backup-sr-metadata.pyc
 @OPTDIR@/libexec/block_device_io
 @OPTDIR@/libexec/cdrommon
+@OPTDIR@/libexec/daily-license-check
 @OPTDIR@/libexec/fence
 @OPTDIR@/libexec/generate_ssl_cert
 @OPTDIR@/libexec/host-backup
@@ -287,9 +316,6 @@ rm -rf $RPM_BUILD_ROOT
 @OPTDIR@/libexec/host-restore
 @OPTDIR@/libexec/interface-reconfigure
 @OPTDIR@/libexec/interface-visualise
-@OPTDIR@/libexec/license-check.py
-@OPTDIR@/libexec/license-check.pyo
-@OPTDIR@/libexec/license-check.pyc
 @OPTDIR@/libexec/link-vms-by-sr.py
 @OPTDIR@/libexec/link-vms-by-sr.pyo
 @OPTDIR@/libexec/link-vms-by-sr.pyc
@@ -310,6 +336,7 @@ rm -rf $RPM_BUILD_ROOT
 @OPTDIR@/libexec/update-mh-info
 @OPTDIR@/libexec/upload-wrapper
 @OPTDIR@/libexec/xapi-health-check
+@OPTDIR@/libexec/xapi-logrotate.sh
 @OPTDIR@/libexec/xapi-rolling-upgrade
 @OPTDIR@/libexec/xha-lc
 @OPTDIR@/libexec/xe-syslog-reconfigure
@@ -332,11 +359,6 @@ rm -rf $RPM_BUILD_ROOT
 @OPTDIR@/bin/xe
 /usr/bin/xe
 /etc/bash_completion.d/xe
-
-%files v6d
-%defattr(-,root,root,-)
-@OPTDIR@/libexec/v6d
-/etc/rc.d/init.d/v6d
 
 %files tests
 %defattr(-,root,root,-)
